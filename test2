@@ -15,7 +15,7 @@ local MAP_SEARCH_RETRY_DELAY = 0.5
 local COIN_POLL_DELAY = 0.1
 local ALIVE_ATTR_CHECK_DELAY = 5
 
-local WALKSPEED = 34
+local WALKSPEED = 33
 local Y_OFFSET = -6.5
 local COOLDOWN_DELAY = 0.5
 --// =================================
@@ -68,7 +68,7 @@ local container = Instance.new("Frame")
 container.Name = "Container"
 container.Size = UDim2.new(0, BASE_WIDTH, 0, COLLAPSED_HEIGHT)
 container.AnchorPoint = Vector2.new(0.5, 0.5)
-container.Position = UDim2.new(0.5, 0, 0.5, 0)   -- centered
+container.Position = UDim2.new(0.5, 0, 0.5, 0)   -- permanently centered
 container.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 container.BorderSizePixel = 0
 container.Parent = screenGui
@@ -211,18 +211,14 @@ makeSettingRow("WalkSpeed (studs/sec)", 5, WALKSPEED, function(num) WALKSPEED = 
 makeSettingRow("Y Offset", 45, Y_OFFSET, function(num) Y_OFFSET = num end)
 makeSettingRow("Cooldown (sec)", 85, COOLDOWN_DELAY, function(num) COOLDOWN_DELAY = num end)
 
---// ===== Responsive scaling (centered using AnchorPoint) =====
+--// ===== Responsive scaling (only scale, never moves position) =====
 local function updateUIPosition()
     local screenSize = camera.ViewportSize
-    -- Skip if viewport isn't ready yet
     if screenSize.X <= 0 or screenSize.Y <= 0 then return end
 
     local currentWidth = expanded and (BASE_WIDTH + SETTINGS_WIDTH) or BASE_WIDTH
-    local currentHeight = expanded and EXPANDED_HEIGHT or COLLAPSED_HEIGHT
-
-    -- Scale so that the UI takes ~20% of screen width
     local scale = (screenSize.X * UI_SCALE_FACTOR) / currentWidth
-    scale = math.clamp(scale, 0.3, 1.0)   -- allow smaller minimum for phones
+    scale = math.clamp(scale, 0.3, 1.0)
     currentScale = scale
     uiScale.Scale = scale
 end
@@ -232,7 +228,7 @@ task.wait(1)
 updateUIPosition()
 camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateUIPosition)
 
--- Update when expanding/collapsing
+-- Expand/collapse – only resizes, position stays centered
 expandButton.MouseButton1Click:Connect(function()
     expanded = not expanded
     if expanded then
