@@ -10,13 +10,13 @@ local MAP_NAMES = {
 
 local COIN_CONTAINER_NAME = "CoinContainer"
 local SPAWNS_FOLDER_NAME = "Spawns"
-local ALIVE_WAIT_TIME = 10
+local ALIVE_WAIT_TIME = 1
 local MAP_SEARCH_RETRY_DELAY = 0.5
 local COIN_POLL_DELAY = 0.1
 local ALIVE_ATTR_CHECK_DELAY = 5
 
-local WALKSPEED = 23
-local Y_OFFSET = 6.5
+local WALKSPEED = 33
+local Y_OFFSET = -6.5
 local COOLDOWN_DELAY = 0.5
 --// =================================
 
