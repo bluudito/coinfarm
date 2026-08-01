@@ -10,13 +10,13 @@ local MAP_NAMES = {
 
 local COIN_CONTAINER_NAME = "CoinContainer"
 local SPAWNS_FOLDER_NAME = "Spawns"
-local ALIVE_WAIT_TIME = 1
+local ALIVE_WAIT_TIME = 10
 local MAP_SEARCH_RETRY_DELAY = 0.5
 local COIN_POLL_DELAY = 0.1
 local ALIVE_ATTR_CHECK_DELAY = 5
 
-local WALKSPEED = 33
-local Y_OFFSET = -6.5
+local WALKSPEED = 23
+local Y_OFFSET = 6.5
 local COOLDOWN_DELAY = 0.5
 --// =================================
 
@@ -48,6 +48,7 @@ local SETTINGS_WIDTH = 170
 local COLLAPSED_HEIGHT = 75
 local EXPANDED_HEIGHT = 160   -- enough to show Cooldown fully
 
+local UI_SCALE_FACTOR = 0.2   -- 20% of screen width (smaller for mobile)
 local expanded = false
 local currentScale = 1
 
@@ -213,10 +214,10 @@ local function updateUIPosition()
     local currentWidth = expanded and (BASE_WIDTH + SETTINGS_WIDTH) or BASE_WIDTH
     local currentHeight = expanded and EXPANDED_HEIGHT or COLLAPSED_HEIGHT
 
-    -- Scale so that the UI takes ~30% of screen width (fits phones & small screens)
-    local targetVisualWidth = screenSize.X * 0.3
+    -- Scale so that the UI takes ~20% of screen width
+    local targetVisualWidth = screenSize.X * UI_SCALE_FACTOR
     local scale = targetVisualWidth / currentWidth
-    scale = math.clamp(scale, 0.5, 1.5)   -- avoid extreme sizes
+    scale = math.clamp(scale, 0.4, 1.0)   -- don't go too small or too large
     currentScale = scale
     uiScale.Scale = scale
 
@@ -245,7 +246,7 @@ expandButton.MouseButton1Click:Connect(function()
     updateUIPosition()
 end)
 
---// ===== Dragging (now respects scaling) =====
+--// ===== Dragging (respects scaling) =====
 local dragging = false
 local dragStart, startPos
 
@@ -266,7 +267,7 @@ end)
 UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
-        -- Convert screen pixels to unscaled offset (because Position uses unscaled offsets)
+        -- Convert screen pixels to unscaled offset (compensate for UIScale)
         container.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X / currentScale,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y / currentScale
