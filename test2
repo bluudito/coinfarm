@@ -15,7 +15,7 @@ local MAP_SEARCH_RETRY_DELAY = 0.5
 local COIN_POLL_DELAY = 0.1
 local ALIVE_ATTR_CHECK_DELAY = 5
 
-local WALKSPEED = 33
+local WALKSPEED = 34
 local Y_OFFSET = -6.5
 local COOLDOWN_DELAY = 0.5
 --// =================================
