@@ -1,0 +1,644 @@
+--// ============ CONFIG ============
+local MAP_NAMES = {
+    "Bank2", "BioLab", "Factory", "Hospital3", "Hotel2", "House2", "Mansion2",
+    "MilBase", "Office3", "PoliceStation", "ResearchFacility", "Workplace",
+    "Manor", "Farmhouse", "Mineshaft", "Barn(Infection)",
+    "Vampire'sVillage(VampireHunt)", "Vampire'sCastle", "Spaceship",
+    "Workshop", "LogCabin", "TrainStation", "IceCastle", "SkiLodge",
+    "ChristmasInItaly", "BeachResort", "Yacht", "Pier"
+}
+
+local COIN_CONTAINER_NAME = "CoinContainer"
+local SPAWNS_FOLDER_NAME = "Spawns"
+local ALIVE_WAIT_TIME = 1
+local MAP_SEARCH_RETRY_DELAY = 0.5
+local COIN_POLL_DELAY = 0.1
+local ALIVE_ATTR_CHECK_DELAY = 5
+
+local WALKSPEED = 33
+local Y_OFFSET = -6.5
+local COOLDOWN_DELAY = 0.5
+--// =================================
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = game.Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local camera = workspace.CurrentCamera
+
+local active = false
+local scriptActive = true
+local currentLoopId = 0
+local CURRENT_MAP_NAME = nil
+local CURRENT_MAP_INSTANCE = nil
+
+-- Continuous noclip
+local noclipConnection = nil
+local noclipActive = false
+
+-- Reusable BodyVelocity
+local reusableBodyVel = nil
+
+-- UI sizing
+local BASE_WIDTH = 180
+local SETTINGS_WIDTH = 170
+local COLLAPSED_HEIGHT = 75
+local EXPANDED_HEIGHT = 160
+
+local UI_SCALE_FACTOR = 0.2   -- 20% of screen width
+local expanded = false
+local currentScale = 1
+
+--// ===== UI =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CoinTPGui"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true   -- ignore notches / status bars
+screenGui.Parent = playerGui
+
+-- UIScale (affects everything inside)
+local uiScale = Instance.new("UIScale")
+uiScale.Scale = 1
+uiScale.Parent = screenGui
+
+local container = Instance.new("Frame")
+container.Name = "Container"
+container.Size = UDim2.new(0, BASE_WIDTH, 0, COLLAPSED_HEIGHT)
+container.AnchorPoint = Vector2.new(0.5, 0.5)
+container.Position = UDim2.new(0.5, 0, 0.5, 0)   -- permanently centered
+container.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+container.BorderSizePixel = 0
+container.Parent = screenGui
+
+local containerCorner = Instance.new("UICorner")
+containerCorner.CornerRadius = UDim.new(0, 8)
+containerCorner.Parent = container
+
+local dragBar = Instance.new("Frame")
+dragBar.Name = "DragBar"
+dragBar.Size = UDim2.new(1, 0, 0, 22)
+dragBar.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+dragBar.BorderSizePixel = 0
+dragBar.Parent = container
+
+local dragBarCorner = Instance.new("UICorner")
+dragBarCorner.CornerRadius = UDim.new(0, 8)
+dragBarCorner.Parent = dragBar
+
+local dragBarMask = Instance.new("Frame")
+dragBarMask.Size = UDim2.new(1, 0, 0, 8)
+dragBarMask.Position = UDim2.new(0, 0, 1, -8)
+dragBarMask.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+dragBarMask.BorderSizePixel = 0
+dragBarMask.ZIndex = 0
+dragBarMask.Parent = dragBar
+
+local dragLabel = Instance.new("TextLabel")
+dragLabel.Size = UDim2.new(1, -55, 1, 0)
+dragLabel.Position = UDim2.new(0, 8, 0, 0)
+dragLabel.BackgroundTransparency = 1
+dragLabel.Font = Enum.Font.GothamBold
+dragLabel.Text = "Coin TP"
+dragLabel.TextXAlignment = Enum.TextXAlignment.Left
+dragLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+dragLabel.TextSize = 13
+dragLabel.Parent = dragBar
+
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.new(0, 20, 0, 20)
+closeButton.Position = UDim2.new(1, -22, 0, 1)
+closeButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+closeButton.BorderSizePixel = 0
+closeButton.Font = Enum.Font.GothamBold
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextSize = 13
+closeButton.AutoButtonColor = false
+closeButton.Parent = dragBar
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 5)
+closeCorner.Parent = closeButton
+
+local expandButton = Instance.new("TextButton")
+expandButton.Size = UDim2.new(0, 20, 0, 20)
+expandButton.Position = UDim2.new(1, -46, 0, 1)
+expandButton.BackgroundColor3 = Color3.fromRGB(60, 60, 68)
+expandButton.BorderSizePixel = 0
+expandButton.Font = Enum.Font.GothamBold
+expandButton.Text = "+"
+expandButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+expandButton.TextSize = 15
+expandButton.AutoButtonColor = false
+expandButton.Parent = dragBar
+
+local expandCorner = Instance.new("UICorner")
+expandCorner.CornerRadius = UDim.new(0, 5)
+expandCorner.Parent = expandButton
+
+local button = Instance.new("TextButton")
+button.Size = UDim2.new(0, BASE_WIDTH - 20, 0, 35)
+button.Position = UDim2.new(0, 10, 0, 32)
+button.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+button.BorderSizePixel = 0
+button.AutoButtonColor = false
+button.Font = Enum.Font.GothamBold
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.TextSize = 15
+button.Text = "OFF"
+button.Parent = container
+
+local buttonCorner = Instance.new("UICorner")
+buttonCorner.CornerRadius = UDim.new(0, 6)
+buttonCorner.Parent = button
+
+local settingsFrame = Instance.new("Frame")
+settingsFrame.Size = UDim2.new(0, SETTINGS_WIDTH - 10, 1, -32)
+settingsFrame.Position = UDim2.new(0, BASE_WIDTH, 0, 32)
+settingsFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+settingsFrame.BorderSizePixel = 0
+settingsFrame.Visible = false
+settingsFrame.Parent = container
+
+local settingsCorner = Instance.new("UICorner")
+settingsCorner.CornerRadius = UDim.new(0, 6)
+settingsCorner.Parent = settingsFrame
+
+local function makeSettingRow(labelText, yPos, defaultValue, onChanged)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -10, 0, 14)
+    label.Position = UDim2.new(0, 5, 0, yPos)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.Gotham
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(180, 180, 180)
+    label.TextSize = 11
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = settingsFrame
+
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -10, 0, 22)
+    box.Position = UDim2.new(0, 5, 0, yPos + 15)
+    box.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    box.BorderSizePixel = 0
+    box.Font = Enum.Font.Gotham
+    box.Text = tostring(defaultValue)
+    box.TextColor3 = Color3.fromRGB(255, 255, 255)
+    box.TextSize = 13
+    box.ClearTextOnFocus = false
+    box.Parent = settingsFrame
+
+    local boxCorner = Instance.new("UICorner")
+    boxCorner.CornerRadius = UDim.new(0, 4)
+    boxCorner.Parent = box
+
+    box.FocusLost:Connect(function()
+        local num = tonumber(box.Text)
+        if num then
+            onChanged(num)
+        else
+            box.Text = tostring(defaultValue)
+        end
+    end)
+
+    return box
+end
+
+makeSettingRow("WalkSpeed (studs/sec)", 5, WALKSPEED, function(num) WALKSPEED = num end)
+makeSettingRow("Y Offset", 45, Y_OFFSET, function(num) Y_OFFSET = num end)
+makeSettingRow("Cooldown (sec)", 85, COOLDOWN_DELAY, function(num) COOLDOWN_DELAY = num end)
+
+--// ===== Responsive scaling (only scale, never moves position) =====
+local function updateUIPosition()
+    local screenSize = camera.ViewportSize
+    if screenSize.X <= 0 or screenSize.Y <= 0 then return end
+
+    local currentWidth = expanded and (BASE_WIDTH + SETTINGS_WIDTH) or BASE_WIDTH
+    local scale = (screenSize.X * UI_SCALE_FACTOR) / currentWidth
+    scale = math.clamp(scale, 0.3, 1.0)
+    currentScale = scale
+    uiScale.Scale = scale
+end
+
+-- Wait a moment so camera is fully initialized on mobile
+task.wait(1)
+updateUIPosition()
+camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateUIPosition)
+
+-- Expand/collapse – only resizes, position stays centered
+expandButton.MouseButton1Click:Connect(function()
+    expanded = not expanded
+    if expanded then
+        expandButton.Text = "-"
+        container.Size = UDim2.new(0, BASE_WIDTH + SETTINGS_WIDTH, 0, EXPANDED_HEIGHT)
+        settingsFrame.Visible = true
+    else
+        expandButton.Text = "+"
+        container.Size = UDim2.new(0, BASE_WIDTH, 0, COLLAPSED_HEIGHT)
+        settingsFrame.Visible = false
+    end
+    updateUIPosition()
+end)
+
+--// ===== Dragging (respects scaling) =====
+local dragging = false
+local dragStart, startPos
+
+dragBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = container.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        -- Convert screen pixels to unscaled offset
+        container.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X / currentScale,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y / currentScale
+        )
+    end
+end)
+
+local function updateButtonVisual()
+    if active then
+        button.Text = "ON"
+        button.BackgroundColor3 = Color3.fromRGB(40, 150, 60)
+    else
+        button.Text = "OFF"
+        button.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+    end
+end
+
+--// ===== Noclip (continuous Stepped loop) =====
+local function setNoclip(enabled)
+    if enabled and not noclipConnection then
+        noclipActive = true
+        noclipConnection = RunService.Stepped:Connect(function()
+            if not noclipActive then return end
+            local char = player.Character
+            if char then
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    elseif not enabled and noclipConnection then
+        noclipActive = false
+        noclipConnection:Disconnect()
+        noclipConnection = nil
+        local char = player.Character
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+--// ===== Coin helpers =====
+local function getCoinPositions()
+    local coins = {}
+    if not CURRENT_MAP_NAME then return coins end
+
+    local map = workspace:FindFirstChild(CURRENT_MAP_NAME)
+    if not map then return coins end
+
+    local coinContainer = map:FindFirstChild(COIN_CONTAINER_NAME)
+    if not coinContainer then return coins end
+
+    for _, coin in ipairs(coinContainer:GetChildren()) do
+        local pos
+        if coin:IsA("BasePart") then
+            pos = coin.Position
+        elseif coin:IsA("Model") then
+            if coin.PrimaryPart then
+                pos = coin.PrimaryPart.Position
+            else
+                local ok, cframe = pcall(function() return coin:GetPivot() end)
+                if ok then pos = cframe.Position end
+            end
+        end
+        if pos then
+            table.insert(coins, { instance = coin, position = pos })
+        end
+    end
+
+    return coins
+end
+
+local function roundIsOver()
+    if not player:GetAttribute("Alive") then return true end
+    if CURRENT_MAP_INSTANCE and not CURRENT_MAP_INSTANCE:IsDescendantOf(workspace) then return true end
+    return false
+end
+
+local function cleanupCharacterState()
+    setNoclip(false)
+    local character = player.Character
+    if character then
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.Anchored = false
+            hrp.CanCollide = true
+        end
+    end
+    if reusableBodyVel then
+        reusableBodyVel:Destroy()
+        reusableBodyVel = nil
+    end
+end
+
+--// ===== Map / spawn helpers =====
+local function findCurrentMap()
+    for _, name in ipairs(MAP_NAMES) do
+        local map = workspace:FindFirstChild(name)
+        if map then return map end
+    end
+    return nil
+end
+
+local function teleportToMapSpawn(map)
+    local spawnsFolder = map:FindFirstChild(SPAWNS_FOLDER_NAME)
+    if not spawnsFolder then return end
+
+    local spawnParts = spawnsFolder:GetChildren()
+    if #spawnParts == 0 then return end
+
+    local chosen = spawnParts[math.random(1, #spawnParts)]
+    local character = player.Character or player.CharacterAdded:Wait()
+    local hrp = character:WaitForChild("HumanoidRootPart")
+
+    local spawnCFrame
+    if chosen:IsA("BasePart") then
+        spawnCFrame = chosen.CFrame
+    elseif chosen:IsA("Model") then
+        spawnCFrame = chosen.PrimaryPart and chosen.PrimaryPart.CFrame or chosen:GetPivot()
+    end
+
+    if spawnCFrame then
+        hrp.CFrame = spawnCFrame + Vector3.new(0, 3, 0)
+    end
+end
+
+--// ===== Coin farming (nearest, reusable mover, firetouchinterest, anti‑hang) =====
+local function farmCoinsOnce(myLoopId, attemptedCoins)
+    local coins = getCoinPositions()
+    if #coins == 0 then return nil end
+
+    local character = player.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    -- Remove leftover holding BodyPosition
+    for _, v in ipairs(hrp:GetChildren()) do
+        if v:IsA("BodyPosition") then v:Destroy() end
+    end
+
+    -- Create or reuse BodyVelocity
+    if not reusableBodyVel or not reusableBodyVel:IsDescendantOf(hrp) then
+        reusableBodyVel = Instance.new("BodyVelocity")
+        reusableBodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+        reusableBodyVel.Velocity = Vector3.zero
+        reusableBodyVel.Parent = hrp
+    end
+    local bodyVel = reusableBodyVel
+    bodyVel.Velocity = Vector3.zero
+
+    -- Find nearest un‑attempted coin
+    local nearestCoin = nil
+    local nearestDist = math.huge
+    for _, coinData in ipairs(coins) do
+        if coinData.instance and coinData.instance:IsDescendantOf(workspace) then
+            if not attemptedCoins[coinData.instance] then
+                local dist = (coinData.position - hrp.Position).Magnitude
+                if dist < nearestDist then
+                    nearestDist = dist
+                    nearestCoin = coinData
+                end
+            end
+        end
+    end
+
+    if not nearestCoin then
+        -- No target; yield to avoid CPU hammering
+        task.wait(COIN_POLL_DELAY)
+        return nil
+    end
+
+    local currentCoin = nearestCoin.instance
+    local targetPos = Vector3.new(nearestCoin.position.X, nearestCoin.position.Y + Y_OFFSET, nearestCoin.position.Z)
+
+    -- Fly toward coin
+    local startTime = tick()
+    while true do
+        if not active or not scriptActive or myLoopId ~= currentLoopId then return nil end
+        if roundIsOver() then return "died" end
+        if not currentCoin:IsDescendantOf(workspace) then break end
+
+        local direction = targetPos - hrp.Position
+        local distance = direction.Magnitude
+        if distance < 0.5 then
+            bodyVel.Velocity = Vector3.zero
+            break
+        end
+
+        bodyVel.Velocity = direction.Unit * WALKSPEED
+        if tick() - startTime > (distance / WALKSPEED) + 3 then
+            bodyVel.Velocity = Vector3.zero
+            break
+        end
+        task.wait()
+    end
+
+    bodyVel.Velocity = Vector3.zero
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    -- Hold position if cooldown > 0
+    local holdPos = nil
+    if COOLDOWN_DELAY > 0 then
+        holdPos = Instance.new("BodyPosition")
+        holdPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+        holdPos.P = 10000
+        holdPos.D = 500
+        holdPos.Position = targetPos
+        holdPos.Parent = hrp
+        task.wait(0.1)   -- settle
+    end
+
+    if not active or not scriptActive or myLoopId ~= currentLoopId then
+        if holdPos then holdPos:Destroy() end
+        return nil
+    end
+    if roundIsOver() then
+        if holdPos then holdPos:Destroy() end
+        return "died"
+    end
+
+    -- Fire touch interest
+    if currentCoin:IsDescendantOf(workspace) then
+        firetouchinterest(hrp, currentCoin, 0)
+        task.wait(0.05)
+        firetouchinterest(hrp, currentCoin, 1)
+    end
+
+    attemptedCoins[currentCoin] = true
+
+    -- Cooldown wait
+    if COOLDOWN_DELAY > 0 then
+        local waited = 0
+        while waited < COOLDOWN_DELAY do
+            if not active or not scriptActive or myLoopId ~= currentLoopId then
+                if holdPos then holdPos:Destroy() end
+                return nil
+            end
+            if roundIsOver() then
+                if holdPos then holdPos:Destroy() end
+                return "died"
+            end
+            task.wait(0.1)
+            waited = waited + 0.1
+        end
+        holdPos:Destroy()
+    end
+
+    return nil
+end
+
+--// ===== Alive attribute wait =====
+local function waitForAliveAttributeToExist()
+    while scriptActive and player:GetAttribute("Alive") == nil do
+        warn("[CoinTP] Alive attribute not found yet, checking again in " .. ALIVE_ATTR_CHECK_DELAY .. "s")
+        task.wait(ALIVE_ATTR_CHECK_DELAY)
+    end
+end
+
+--// ===== Main state loop =====
+local function runSequence()
+    currentLoopId = currentLoopId + 1
+    local myLoopId = currentLoopId
+
+    task.spawn(function()
+        waitForAliveAttributeToExist()
+
+        while active and scriptActive and myLoopId == currentLoopId do
+            -- PHASE 1: LOBBY
+            warn("[CoinTP] Entered LOBBY, waiting for Alive")
+            while active and scriptActive and not player:GetAttribute("Alive") do
+                player:GetAttributeChangedSignal("Alive"):Wait()
+            end
+            if not active or not scriptActive or myLoopId ~= currentLoopId then break end
+
+            -- PHASE 2: ROUND_STARTING
+            warn("[CoinTP] Alive detected, waiting " .. ALIVE_WAIT_TIME .. "s before map search")
+            task.wait(ALIVE_WAIT_TIME)
+            if not active or not scriptActive or myLoopId ~= currentLoopId then break end
+
+            if player:GetAttribute("Alive") then
+                local map = nil
+                while active and scriptActive and myLoopId == currentLoopId do
+                    if not player:GetAttribute("Alive") then break end
+                    map = findCurrentMap()
+                    if map then break end
+                    task.wait(MAP_SEARCH_RETRY_DELAY)
+                end
+
+                if map and player:GetAttribute("Alive") then
+                    CURRENT_MAP_NAME = map.Name
+                    CURRENT_MAP_INSTANCE = map
+                    warn("[CoinTP] Map detected: " .. CURRENT_MAP_NAME)
+                    teleportToMapSpawn(map)
+                    setNoclip(true)
+
+                    -- PHASE 3: FARMING
+                    warn("[CoinTP] Farming started")
+                    local attemptedCoins = {}
+                    local diedFlag = false
+                    while active and scriptActive and myLoopId == currentLoopId do
+                        if roundIsOver() then
+                            diedFlag = true
+                            break
+                        end
+
+                        local coinPositions = getCoinPositions()
+                        if #coinPositions == 0 then
+                            task.wait(COIN_POLL_DELAY)
+                        else
+                            local result = farmCoinsOnce(myLoopId, attemptedCoins)
+                            if result == "died" then
+                                diedFlag = true
+                                break
+                            end
+                            if result == nil then
+                                -- No target found; wait to prevent tight loop
+                                task.wait(COIN_POLL_DELAY)
+                            end
+                        end
+                    end
+
+                    -- PHASE 4: CLEANUP
+                    warn("[CoinTP] Round ended, cleaning up")
+                    cleanupCharacterState()
+                    CURRENT_MAP_NAME = nil
+                    CURRENT_MAP_INSTANCE = nil
+                end
+            end
+        end
+    end)
+end
+
+button.MouseButton1Click:Connect(function()
+    active = not active
+    updateButtonVisual()
+
+    if active then
+        runSequence()
+    else
+        currentLoopId = currentLoopId + 1
+        cleanupCharacterState()
+        CURRENT_MAP_NAME = nil
+        CURRENT_MAP_INSTANCE = nil
+    end
+end)
+
+player.CharacterAdded:Connect(function(character)
+    if not active then
+        setNoclip(false)
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.Anchored = false
+            hrp.CanCollide = true
+        end
+    else
+        task.wait(0.5)
+        setNoclip(true)
+    end
+end)
+
+closeButton.MouseButton1Click:Connect(function()
+    scriptActive = false
+    active = false
+    currentLoopId = currentLoopId + 1
+    cleanupCharacterState()
+    CURRENT_MAP_NAME = nil
+    CURRENT_MAP_INSTANCE = nil
+    screenGui:Destroy()
+    script:Destroy()
+end)
