@@ -46,9 +46,9 @@ local reusableBodyVel = nil
 local BASE_WIDTH = 180
 local SETTINGS_WIDTH = 170
 local COLLAPSED_HEIGHT = 75
-local EXPANDED_HEIGHT = 160   -- enough to show Cooldown fully
+local EXPANDED_HEIGHT = 160
 
-local UI_SCALE_FACTOR = 0.2   -- 20% of screen width (smaller for mobile)
+local UI_SCALE_FACTOR = 0.2   -- 20% of screen width
 local expanded = false
 local currentScale = 1
 
@@ -56,16 +56,19 @@ local currentScale = 1
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "CoinTPGui"
 screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true   -- ignore notches / status bars
 screenGui.Parent = playerGui
 
--- UIScale (will be updated dynamically)
+-- UIScale (affects everything inside)
 local uiScale = Instance.new("UIScale")
 uiScale.Scale = 1
-uiScale.Parent = screenGui   -- affects everything inside
+uiScale.Parent = screenGui
 
 local container = Instance.new("Frame")
 container.Name = "Container"
 container.Size = UDim2.new(0, BASE_WIDTH, 0, COLLAPSED_HEIGHT)
+container.AnchorPoint = Vector2.new(0.5, 0.5)
+container.Position = UDim2.new(0.5, 0, 0.5, 0)   -- centered
 container.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 container.BorderSizePixel = 0
 container.Parent = screenGui
@@ -208,26 +211,24 @@ makeSettingRow("WalkSpeed (studs/sec)", 5, WALKSPEED, function(num) WALKSPEED = 
 makeSettingRow("Y Offset", 45, Y_OFFSET, function(num) Y_OFFSET = num end)
 makeSettingRow("Cooldown (sec)", 85, COOLDOWN_DELAY, function(num) COOLDOWN_DELAY = num end)
 
---// ===== Responsive scaling & positioning =====
+--// ===== Responsive scaling (centered using AnchorPoint) =====
 local function updateUIPosition()
     local screenSize = camera.ViewportSize
+    -- Skip if viewport isn't ready yet
+    if screenSize.X <= 0 or screenSize.Y <= 0 then return end
+
     local currentWidth = expanded and (BASE_WIDTH + SETTINGS_WIDTH) or BASE_WIDTH
     local currentHeight = expanded and EXPANDED_HEIGHT or COLLAPSED_HEIGHT
 
     -- Scale so that the UI takes ~20% of screen width
-    local targetVisualWidth = screenSize.X * UI_SCALE_FACTOR
-    local scale = targetVisualWidth / currentWidth
-    scale = math.clamp(scale, 0.4, 1.0)   -- don't go too small or too large
+    local scale = (screenSize.X * UI_SCALE_FACTOR) / currentWidth
+    scale = math.clamp(scale, 0.3, 1.0)   -- allow smaller minimum for phones
     currentScale = scale
     uiScale.Scale = scale
-
-    -- Center the container
-    local visualW = currentWidth * scale
-    local visualH = currentHeight * scale
-    container.Position = UDim2.new(0.5, -visualW/2, 0.5, -visualH/2)
 end
 
--- Initial call and screen resize listener
+-- Wait a moment so camera is fully initialized on mobile
+task.wait(1)
 updateUIPosition()
 camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateUIPosition)
 
@@ -267,7 +268,7 @@ end)
 UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
-        -- Convert screen pixels to unscaled offset (compensate for UIScale)
+        -- Convert screen pixels to unscaled offset
         container.Position = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X / currentScale,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y / currentScale
