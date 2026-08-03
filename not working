@@ -1,0 +1,687 @@
+--// ============ UPGRADED CONFIG ============
+local COIN_CONTAINER_NAME = "CoinContainer"
+local COIN_AREAS_NAME = "CoinAreas"
+local SPAWNS_FOLDER_NAME = "Spawns"
+local LOBBY_CFRAME = CFrame.new(
+    0.247963816, -55.1755638, -13.1644669,
+    -0.998459637, -1.18627419e-07, 0.0554830357,
+    -1.20305785e-07, 1, -2.69099534e-08,
+    -0.0554830357, -3.35434329e-08, -0.998459637
+)
+local COIN_POLL_DELAY = 0.1
+local COOLDOWN_DELAY = 0.5
+local WALKSPEED = 33
+local Y_OFFSET = -6.5
+--// ==========================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local camera = workspace.CurrentCamera
+
+-- Remote Events
+local FadeEvent = ReplicatedStorage.Remotes.Gameplay.Fade
+local CoinCollectedEvent = ReplicatedStorage.Remotes.Gameplay.CoinCollected
+local Clear1v1Event = ReplicatedStorage.Remotes.CustomGames.Clear1v1
+
+local active = false
+local scriptActive = true
+local currentLoopId = 0
+
+-- Current game state
+local CURRENT_MAP_INSTANCE = nil
+local myRole = nil
+local serverPlayersData = {}
+local farmingActive = false
+local coinBagFull = false
+local maxCoinCapacity = nil
+local currentCoinCount = 0
+
+-- Noclip (simple Heartbeat loop – sets CanCollide every frame for local player)
+local noclipActive = false
+local noclipConn = nil
+
+-- No physics movers needed anymore
+
+-- UI scaling
+local BASE_WIDTH = 180
+local SETTINGS_WIDTH = 170
+local COLLAPSED_HEIGHT = 75
+local EXPANDED_HEIGHT = 160
+local UI_SCALE_FACTOR = 0.2
+local expanded = false
+local currentScale = 1
+
+--// ===== UI =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CoinTPGui"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.Parent = playerGui
+
+local uiScale = Instance.new("UIScale")
+uiScale.Scale = 1
+uiScale.Parent = screenGui
+
+local container = Instance.new("Frame")
+container.Name = "Container"
+container.Size = UDim2.new(0, BASE_WIDTH, 0, COLLAPSED_HEIGHT)
+container.AnchorPoint = Vector2.new(0.5, 0.5)
+container.Position = UDim2.new(0.5, 0, 0.5, 0)
+container.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+container.BorderSizePixel = 0
+container.Parent = screenGui
+
+local containerCorner = Instance.new("UICorner")
+containerCorner.CornerRadius = UDim.new(0, 8)
+containerCorner.Parent = container
+
+local dragBar = Instance.new("Frame")
+dragBar.Name = "DragBar"
+dragBar.Size = UDim2.new(1, 0, 0, 22)
+dragBar.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+dragBar.BorderSizePixel = 0
+dragBar.Parent = container
+
+local dragBarCorner = Instance.new("UICorner")
+dragBarCorner.CornerRadius = UDim.new(0, 8)
+dragBarCorner.Parent = dragBar
+
+local dragBarMask = Instance.new("Frame")
+dragBarMask.Size = UDim2.new(1, 0, 0, 8)
+dragBarMask.Position = UDim2.new(0, 0, 1, -8)
+dragBarMask.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+dragBarMask.BorderSizePixel = 0
+dragBarMask.ZIndex = 0
+dragBarMask.Parent = dragBar
+
+local dragLabel = Instance.new("TextLabel")
+dragLabel.Size = UDim2.new(1, -55, 1, 0)
+dragLabel.Position = UDim2.new(0, 8, 0, 0)
+dragLabel.BackgroundTransparency = 1
+dragLabel.Font = Enum.Font.GothamBold
+dragLabel.Text = "Coin TP"
+dragLabel.TextXAlignment = Enum.TextXAlignment.Left
+dragLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+dragLabel.TextSize = 13
+dragLabel.Parent = dragBar
+
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.new(0, 20, 0, 20)
+closeButton.Position = UDim2.new(1, -22, 0, 1)
+closeButton.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+closeButton.BorderSizePixel = 0
+closeButton.Font = Enum.Font.GothamBold
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextSize = 13
+closeButton.AutoButtonColor = false
+closeButton.Parent = dragBar
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 5)
+closeCorner.Parent = closeButton
+
+local expandButton = Instance.new("TextButton")
+expandButton.Size = UDim2.new(0, 20, 0, 20)
+expandButton.Position = UDim2.new(1, -46, 0, 1)
+expandButton.BackgroundColor3 = Color3.fromRGB(60, 60, 68)
+expandButton.BorderSizePixel = 0
+expandButton.Font = Enum.Font.GothamBold
+expandButton.Text = "+"
+expandButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+expandButton.TextSize = 15
+expandButton.AutoButtonColor = false
+expandButton.Parent = dragBar
+
+local expandCorner = Instance.new("UICorner")
+expandCorner.CornerRadius = UDim.new(0, 5)
+expandCorner.Parent = expandButton
+
+local button = Instance.new("TextButton")
+button.Size = UDim2.new(0, BASE_WIDTH - 20, 0, 35)
+button.Position = UDim2.new(0, 10, 0, 32)
+button.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+button.BorderSizePixel = 0
+button.AutoButtonColor = false
+button.Font = Enum.Font.GothamBold
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.TextSize = 15
+button.Text = "OFF"
+button.Parent = container
+
+local buttonCorner = Instance.new("UICorner")
+buttonCorner.CornerRadius = UDim.new(0, 6)
+buttonCorner.Parent = button
+
+local settingsFrame = Instance.new("Frame")
+settingsFrame.Size = UDim2.new(0, SETTINGS_WIDTH - 10, 1, -32)
+settingsFrame.Position = UDim2.new(0, BASE_WIDTH, 0, 32)
+settingsFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+settingsFrame.BorderSizePixel = 0
+settingsFrame.Visible = false
+settingsFrame.Parent = container
+
+local settingsCorner = Instance.new("UICorner")
+settingsCorner.CornerRadius = UDim.new(0, 6)
+settingsCorner.Parent = settingsFrame
+
+local function makeSettingRow(labelText, yPos, defaultValue, onChanged)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -10, 0, 14)
+    label.Position = UDim2.new(0, 5, 0, yPos)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.Gotham
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(180, 180, 180)
+    label.TextSize = 11
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = settingsFrame
+
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -10, 0, 22)
+    box.Position = UDim2.new(0, 5, 0, yPos + 15)
+    box.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    box.BorderSizePixel = 0
+    box.Font = Enum.Font.Gotham
+    box.Text = tostring(defaultValue)
+    box.TextColor3 = Color3.fromRGB(255, 255, 255)
+    box.TextSize = 13
+    box.ClearTextOnFocus = false
+    box.Parent = settingsFrame
+
+    local boxCorner = Instance.new("UICorner")
+    boxCorner.CornerRadius = UDim.new(0, 4)
+    boxCorner.Parent = box
+
+    box.FocusLost:Connect(function()
+        local num = tonumber(box.Text)
+        if num then
+            onChanged(num)
+        else
+            box.Text = tostring(defaultValue)
+        end
+    end)
+
+    return box
+end
+
+makeSettingRow("WalkSpeed (studs/sec)", 5, WALKSPEED, function(num) WALKSPEED = num end)
+makeSettingRow("Y Offset", 45, Y_OFFSET, function(num) Y_OFFSET = num end)
+makeSettingRow("Cooldown (sec)", 85, COOLDOWN_DELAY, function(num) COOLDOWN_DELAY = num end)
+
+--// ===== Responsive scaling =====
+local function updateUIPosition()
+    local screenSize = camera.ViewportSize
+    if screenSize.X <= 0 or screenSize.Y <= 0 then return end
+    local currentWidth = expanded and (BASE_WIDTH + SETTINGS_WIDTH) or BASE_WIDTH
+    local scale = (screenSize.X * UI_SCALE_FACTOR) / currentWidth
+    scale = math.clamp(scale, 0.3, 1.0)
+    currentScale = scale
+    uiScale.Scale = scale
+end
+
+task.wait(1)
+updateUIPosition()
+camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateUIPosition)
+
+expandButton.MouseButton1Click:Connect(function()
+    expanded = not expanded
+    if expanded then
+        expandButton.Text = "-"
+        container.Size = UDim2.new(0, BASE_WIDTH + SETTINGS_WIDTH, 0, EXPANDED_HEIGHT)
+        settingsFrame.Visible = true
+    else
+        expandButton.Text = "+"
+        container.Size = UDim2.new(0, BASE_WIDTH, 0, COLLAPSED_HEIGHT)
+        settingsFrame.Visible = false
+    end
+    updateUIPosition()
+end)
+
+--// ===== Dragging =====
+local dragging = false
+local dragStart, startPos
+
+dragBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = container.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        container.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X / currentScale,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y / currentScale
+        )
+    end
+end)
+
+local function updateButtonVisual()
+    if active then
+        button.Text = "ON"
+        button.BackgroundColor3 = Color3.fromRGB(40, 150, 60)
+    else
+        button.Text = "OFF"
+        button.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+    end
+end
+
+--// ===== Noclip (Heartbeat loop – sets CanCollide every frame for local player) =====
+local function setNoclip(enabled)
+    if enabled == noclipActive then return end
+    noclipActive = enabled
+
+    if enabled then
+        noclipConn = RunService.Heartbeat:Connect(function()
+            local char = player.Character
+            if char then
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    else
+        if noclipConn then
+            noclipConn:Disconnect()
+            noclipConn = nil
+        end
+        local char = player.Character
+        if char then
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+    end
+end
+
+--// ===== Cleanup helpers =====
+local function cleanupCharacterState()
+    setNoclip(false)
+    local character = player.Character
+    if character then
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.Anchored = false
+            hrp.CanCollide = true
+        end
+    end
+    farmingActive = false
+    coinBagFull = false
+end
+
+--// ===== Coin helpers =====
+local function getCoinPositions()
+    local coins = {}
+    if not CURRENT_MAP_INSTANCE then return coins end
+    local coinContainer = CURRENT_MAP_INSTANCE:FindFirstChild(COIN_CONTAINER_NAME)
+    if not coinContainer then return coins end
+    for _, coin in ipairs(coinContainer:GetChildren()) do
+        local pos
+        if coin:IsA("BasePart") then
+            pos = coin.Position
+        elseif coin:IsA("Model") then
+            if coin.PrimaryPart then
+                pos = coin.PrimaryPart.Position
+            else
+                local ok, cframe = pcall(function() return coin:GetPivot() end)
+                if ok then pos = cframe.Position end
+            end
+        end
+        if pos then
+            table.insert(coins, { instance = coin, position = pos })
+        end
+    end
+    return coins
+end
+
+--// ===== Teleport to map spawn =====
+local function teleportToMapSpawn(map)
+    local spawnsFolder = map:FindFirstChild(SPAWNS_FOLDER_NAME)
+    if not spawnsFolder then return end
+    local spawnParts = spawnsFolder:GetChildren()
+    if #spawnParts == 0 then return end
+    local chosen = spawnParts[math.random(1, #spawnParts)]
+    local character = player.Character or player.CharacterAdded:Wait()
+    local hrp = character:WaitForChild("HumanoidRootPart")
+    local spawnCFrame
+    if chosen:IsA("BasePart") then
+        spawnCFrame = chosen.CFrame
+    elseif chosen:IsA("Model") then
+        spawnCFrame = chosen.PrimaryPart and chosen.PrimaryPart.CFrame or chosen:GetPivot()
+    end
+    if spawnCFrame then
+        hrp.CFrame = spawnCFrame + Vector3.new(0, 3, 0)
+    end
+end
+
+--// ===== Find CoinAreas (map detection) =====
+local function findCoinAreas()
+    for _, child in ipairs(workspace:GetChildren()) do
+        if child:IsA("Model") then
+            local areas = child:FindFirstChild(COIN_AREAS_NAME)
+            if areas then
+                return areas
+            end
+        end
+    end
+    return nil
+end
+
+--// ===== Coin farming loop (CFrame‑based movement – no physics, goes through terrain) =====
+local function farmCoinsOnce(attemptedCoins)
+    if not farmingActive then return nil end
+    local coins = getCoinPositions()
+    if #coins == 0 then return nil end
+
+    local character = player.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    -- Find nearest un‑attempted coin
+    local nearestCoin = nil
+    local nearestDist = math.huge
+    for _, coinData in ipairs(coins) do
+        if coinData.instance and coinData.instance:IsDescendantOf(workspace) then
+            if not attemptedCoins[coinData.instance] then
+                local dist = (coinData.position - hrp.Position).Magnitude
+                if dist < nearestDist then
+                    nearestDist = dist
+                    nearestCoin = coinData
+                end
+            end
+        end
+    end
+
+    if not nearestCoin then return nil end
+
+    local currentCoin = nearestCoin.instance
+    local targetPos = Vector3.new(nearestCoin.position.X, nearestCoin.position.Y + Y_OFFSET, nearestCoin.position.Z)
+
+    -- Move directly by setting CFrame every frame (ignores physics/terrain)
+    local moveConnection
+    local reached = false
+    moveConnection = RunService.Heartbeat:Connect(function(dt)
+        if not farmingActive then
+            reached = true
+            return
+        end
+        local dir = targetPos - hrp.Position
+        local dist = dir.Magnitude
+        if dist < 0.5 then
+            reached = true
+            return
+        end
+        local step = math.min(WALKSPEED * dt, dist) -- smooth step
+        hrp.CFrame = hrp.CFrame + dir.Unit * step
+    end)
+
+    -- Wait until we reach the coin or something interrupts
+    while farmingActive and not reached and currentCoin:IsDescendantOf(workspace) do
+        if coinBagFull then
+            moveConnection:Disconnect()
+            return "full"
+        end
+        task.wait()
+    end
+    moveConnection:Disconnect()
+
+    if not farmingActive then return nil end
+    if coinBagFull then return "full" end
+
+    -- Hold position at the coin
+    hrp.CFrame = CFrame.new(targetPos)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+
+    if COOLDOWN_DELAY > 0 then
+        local waited = 0
+        while waited < COOLDOWN_DELAY do
+            if not farmingActive or not active then return nil end
+            if coinBagFull then return "full" end
+            task.wait(0.1)
+            waited = waited + 0.1
+        end
+    end
+
+    -- Fire touch interest
+    if currentCoin:IsDescendantOf(workspace) then
+        hrp.CFrame = CFrame.new(targetPos)  -- ensure still there
+        pcall(function() firetouchinterest(hrp, currentCoin, 0) end)
+        task.wait(0.05)
+        pcall(function() firetouchinterest(hrp, currentCoin, 1) end)
+    end
+
+    attemptedCoins[currentCoin] = true
+    return nil
+end
+
+--// ===== CoinCollected event handler =====
+CoinCollectedEvent.OnClientEvent:Connect(function(coinName, count, max, extra)
+    currentCoinCount = count
+    if maxCoinCapacity == nil then maxCoinCapacity = max end
+    if count >= max then
+        coinBagFull = true
+    end
+end)
+
+--// ===== Role-based actions =====
+local function performRoleAction()
+    if not farmingActive then return end
+    farmingActive = false
+    setNoclip(false)
+
+    if myRole == "Innocent" then
+        local character = player.Character
+        if character then
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.CFrame = LOBBY_CFRAME
+                hrp.Anchored = true
+                hrp.CanCollide = false
+            end
+        end
+        warn("[CoinTP] Innocent – camping at lobby until game ends.")
+    else
+        local character = player.Character
+        if character then
+            character:BreakJoints()
+        end
+        warn("[CoinTP] " .. (myRole or "Unknown") .. " – character reset.")
+    end
+end
+
+--// ===== Main sequence =====
+local function runSequence()
+    currentLoopId = currentLoopId + 1
+    local myLoopId = currentLoopId
+
+    task.spawn(function()
+        while active and scriptActive and myLoopId == currentLoopId do
+            local success, fadeData = pcall(function() return FadeEvent.OnClientEvent:Wait() end)
+            if not success or not active or not scriptActive or myLoopId ~= currentLoopId then break end
+
+            serverPlayersData = fadeData or {}
+            myRole = nil
+            if serverPlayersData[player.Name] then
+                myRole = serverPlayersData[player.Name].Role
+            end
+            warn("[CoinTP] Game started, my role: " .. tostring(myRole))
+
+            local coinAreas = nil
+            local startWait = tick()
+            while not coinAreas and active and scriptActive and myLoopId == currentLoopId do
+                coinAreas = findCoinAreas()
+                if not coinAreas then
+                    task.wait(0.2)
+                    if tick() - startWait > 15 then
+                        warn("[CoinTP] Timed out waiting for CoinAreas")
+                        break
+                    end
+                end
+            end
+
+            if coinAreas then
+                local map = coinAreas.Parent
+                CURRENT_MAP_INSTANCE = map
+                warn("[CoinTP] Map found: " .. map.Name)
+
+                local coinContainer = nil
+                startWait = tick()
+                while not coinContainer and active and scriptActive and myLoopId == currentLoopId do
+                    coinContainer = map:FindFirstChild(COIN_CONTAINER_NAME)
+                    if not coinContainer then
+                        task.wait(0.2)
+                        if tick() - startWait > 20 then
+                            warn("[CoinTP] Timed out waiting for CoinContainer")
+                            break
+                        end
+                    end
+                end
+
+                if coinContainer then
+                    local character = player.Character
+                    if character then
+                        local hrp = character:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            hrp.Anchored = false
+                            hrp.CanCollide = true
+                        end
+                    end
+
+                    teleportToMapSpawn(map)
+
+                    setNoclip(true)
+                    farmingActive = true
+                    coinBagFull = false
+                    currentCoinCount = 0
+                    maxCoinCapacity = nil
+
+                    local attemptedCoins = {}
+                    local gameEnded = false
+                    local breakReason = nil
+
+                    local clear1v1Connection
+                    clear1v1Connection = Clear1v1Event.OnClientEvent:Connect(function()
+                        gameEnded = true
+                    end)
+
+                    while farmingActive and active and scriptActive and myLoopId == currentLoopId do
+                        if not CURRENT_MAP_INSTANCE or not CURRENT_MAP_INSTANCE:IsDescendantOf(workspace) then
+                            breakReason = "mapgone"
+                            break
+                        end
+
+                        if coinBagFull then
+                            performRoleAction()
+                            breakReason = "full"
+                            break
+                        end
+
+                        if gameEnded then
+                            task.wait(0.2)
+                            if not CURRENT_MAP_INSTANCE or not CURRENT_MAP_INSTANCE:IsDescendantOf(workspace) then
+                                breakReason = "clear1v1"
+                                break
+                            else
+                                gameEnded = false
+                            end
+                        end
+
+                        local coinPositions = getCoinPositions()
+                        if #coinPositions == 0 then
+                            task.wait(COIN_POLL_DELAY)
+                        else
+                            local result = farmCoinsOnce(attemptedCoins)
+                            if result == "full" then
+                                performRoleAction()
+                                breakReason = "full"
+                                break
+                            end
+                            if result == nil then
+                                task.wait(COIN_POLL_DELAY)
+                            end
+                        end
+                    end
+
+                    if clear1v1Connection then
+                        clear1v1Connection:Disconnect()
+                        clear1v1Connection = nil
+                    end
+
+                    if breakReason == "full" and myRole == "Innocent" then
+                        farmingActive = false
+                        coinBagFull = false
+                    else
+                        cleanupCharacterState()
+                    end
+                end
+            else
+                warn("[CoinTP] Round skipped – no CoinAreas found")
+                cleanupCharacterState()
+            end
+
+            CURRENT_MAP_INSTANCE = nil
+            myRole = nil
+            farmingActive = false
+            coinBagFull = false
+        end
+    end)
+end
+
+--// ===== Button toggle =====
+button.MouseButton1Click:Connect(function()
+    active = not active
+    updateButtonVisual()
+    if active then
+        runSequence()
+    else
+        currentLoopId = currentLoopId + 1
+        cleanupCharacterState()
+        CURRENT_MAP_INSTANCE = nil
+        farmingActive = false
+    end
+end)
+
+--// ===== Character reset handling =====
+player.CharacterAdded:Connect(function(character)
+    if not active then
+        setNoclip(false)
+    else
+        task.wait(0.5)
+        if active and farmingActive then
+            setNoclip(true)
+        end
+    end
+end)
+
+--// ===== Close button =====
+closeButton.MouseButton1Click:Connect(function()
+    scriptActive = false
+    active = false
+    currentLoopId = currentLoopId + 1
+    cleanupCharacterState()
+    CURRENT_MAP_INSTANCE = nil
+    serverPlayersData = {}
+    screenGui:Destroy()
+    if script then
+        script:Destroy()
+    end
+end)
