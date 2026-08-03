@@ -44,6 +44,9 @@ local currentCoinCount = 0
 -- Noclip (simple Heartbeat loop – sets CanCollide every frame for local player)
 local noclipActive = false
 local noclipConn = nil
+local savedPartCollisions = {}
+local savedHRPState = nil
+local savedHumanoidState = nil
 
 -- No physics movers needed anymore
 
@@ -285,30 +288,112 @@ local function setNoclip(enabled)
     if enabled == noclipActive then return end
     noclipActive = enabled
 
+    local char = player.Character
+
     if enabled then
-        noclipConn = RunService.Heartbeat:Connect(function()
-            local char = player.Character
-            if char then
-                for _, part in ipairs(char:GetDescendants()) do
-                    if part:IsA("BasePart") then
-                        part.CanCollide = false
-                    end
+        -- save current states
+        savedPartCollisions = {}
+        savedHRPState = nil
+        savedHumanoidState = nil
+
+        if char then
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    savedPartCollisions[part] = part.CanCollide
+                    part.CanCollide = false
                 end
             end
-        end)
-    else
+
+            if hrp then
+                savedHRPState = {Anchored = hrp.Anchored, CanCollide = hrp.CanCollide}
+                hrp.CanCollide = false
+                hrp.Anchored = true -- anchor HRP while noclipping so we can move through terrain
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end
+
+            if humanoid then
+                savedHumanoidState = {PlatformStand = humanoid.PlatformStand}
+                humanoid.PlatformStand = true
+            end
+        end
+
         if noclipConn then
             noclipConn:Disconnect()
             noclipConn = nil
         end
-        local char = player.Character
-        if char then
-            for _, part in ipairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = true
+
+        noclipConn = RunService.Heartbeat:Connect(function()
+            local c = player.Character
+            if not c then return end
+            local h = c:FindFirstChildOfClass("Humanoid")
+            local root = c:FindFirstChild("HumanoidRootPart")
+
+            if root then
+                root.CanCollide = false
+                root.Anchored = true
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+            end
+
+            for _, p in ipairs(c:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.CanCollide = false
+                end
+            end
+
+            if h then
+                h.PlatformStand = true
+            end
+        end)
+    else
+        -- disable noclip: restore saved states
+        if noclipConn then
+            noclipConn:Disconnect()
+            noclipConn = nil
+        end
+
+        local c = player.Character
+        if c then
+            local humanoid = c:FindFirstChildOfClass("Humanoid")
+            local hrp = c:FindFirstChild("HumanoidRootPart")
+
+            for part, prevCanCollide in pairs(savedPartCollisions) do
+                if part and part:IsA and part:IsA("BasePart") then
+                    -- restore only if the part still exists
+                    pcall(function() part.CanCollide = prevCanCollide end)
+                end
+            end
+
+            if hrp then
+                if savedHRPState then
+                    pcall(function()
+                        hrp.Anchored = savedHRPState.Anchored
+                        hrp.CanCollide = savedHRPState.CanCollide
+                    end)
+                else
+                    hrp.Anchored = false
+                    hrp.CanCollide = true
+                end
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end
+
+            if humanoid then
+                if savedHumanoidState then
+                    pcall(function() humanoid.PlatformStand = savedHumanoidState.PlatformStand end)
+                else
+                    humanoid.PlatformStand = false
                 end
             end
         end
+
+        savedPartCollisions = {}
+        savedHRPState = nil
+        savedHumanoidState = nil
     end
 end
 
