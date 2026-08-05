@@ -2,7 +2,8 @@
     MM2 Custom Menu
     Part 1: Core Game Logic & Dashboard
     Part 2: ESP, Tabs, Minimize/Close, Role Filters
-    Part 3: Coin Farm Auto-Farmer (TeleportToPart Sync, Instant Hide, Instant TP Camp, Safe Disable, Full Close)
+    Part 3: Coin Farm Auto-Farmer
+    Part 4: Murderer Kill All (Auto Loop & Manual Button)
 ]]
 
 local Players = game:GetService("Players")
@@ -11,6 +12,7 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
+local VirtualUser = game:GetService("VirtualUser")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -43,7 +45,9 @@ local State = {
     CoinFarmYOffset = -6.5,
     CoinFarmSpeed = 33,
     TeleportedToMap = false,
-    TeleportTick = 0
+    TeleportTick = 0,
+    AutoKillAllEnabled = false,
+    KillAllButtonMode = false
 }
 
 local CampCFrame = CFrame.new(0.247963816, -55.1755638, -13.1644669, -0.998459637, -1.18627419e-07, 0.0554830357, -1.20305785e-08, 1, -2.69099534e-08, -0.0554830357, -3.35434329e-08, -0.998459637)
@@ -52,8 +56,96 @@ local connections = {}
 local espObjects = {}
 local ScriptActive = true
 
+-- Pre-declare variables so CloseScript can access them safely
+local noclipConnection = nil
+local reusableBodyVel = nil
+local wasFarming = false
+
 if CoreGui:FindFirstChild("MM2CustomMenu") then
     CoreGui.MM2CustomMenu:Destroy()
+end
+
+-- ================= KILL ALL LOGIC ================= --
+local function EquipKnife()
+    local char = LocalPlayer.Character
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if not char then return false end
+    if char:FindFirstChild("Knife") then return true end
+    
+    if backpack and backpack:FindFirstChild("Knife") then
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:EquipTool(backpack.Knife)
+            task.wait() -- Wait a frame for it to fully equip
+            return true
+        end
+    end
+    return false
+end
+
+local function PerformKillAll()
+    local myChar = LocalPlayer.Character
+    if not myChar then return end
+    local myHrp = myChar:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    
+    -- 1. Equip Knife
+    local hasKnife = EquipKnife()
+    if not hasKnife then return end
+    
+    local knife = myChar:FindFirstChild("Knife")
+    if not knife then return end
+    
+    -- 2. Save original positions and targets
+    local savedPositions = {}
+    local targets = {}
+    
+    for _, targetPlr in ipairs(Players:GetPlayers()) do
+        if targetPlr ~= LocalPlayer and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") then
+            local targetHrp = targetPlr.Character.HumanoidRootPart
+            savedPositions[targetHrp] = targetHrp.CFrame
+            table.insert(targets, targetHrp)
+            
+            -- Disable collisions locally so they don't push us
+            for _, part in ipairs(targetPlr.Character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+    
+    -- 3. HOLD them in front of us while we stab
+    local holdingLoop
+    holdingLoop = RunService.Heartbeat:Connect(function()
+        for _, targetHrp in ipairs(targets) do
+            if targetHrp and targetHrp.Parent then
+                targetHrp.CFrame = myHrp.CFrame * CFrame.new(0, 0, -2)
+            end
+        end
+    end)
+    
+    -- 4. Trigger the stab (Using VirtualUser bypasses UI completely)
+    pcall(function() knife:Activate() end)
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:Button1Down(Vector2.new())
+        task.wait(0.1)
+        VirtualUser:Button1Up(Vector2.new())
+    end)
+    
+    -- 5. Wait 0.6 seconds for the knife swing animation to actually hit them
+    task.wait(0.6)
+    
+    -- 6. Stop holding them
+    holdingLoop:Disconnect()
+    
+    -- 7. Un-TP them (send them back to where they were)
+    for hrp, originalCFrame in pairs(savedPositions) do
+        if hrp and hrp.Parent then
+            hrp.CFrame = originalCFrame
+        end
+    end
 end
 
 -- ================= UI CREATION ================= --
@@ -90,6 +182,23 @@ MiniCube.Parent = ScreenGui
 local MiniCorner = Instance.new("UICorner")
 MiniCorner.CornerRadius = UDim.new(0, 8)
 MiniCorner.Parent = MiniCube
+
+-- Kill All Manual Cube
+local KillCube = Instance.new("TextButton")
+KillCube.Name = "KillCube"
+KillCube.Size = UDim2.new(0, 60, 0, 60)
+KillCube.Position = UDim2.new(0, 120, 0, 50)
+KillCube.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+KillCube.Text = "KILL"
+KillCube.TextColor3 = Color3.fromRGB(255, 255, 255)
+KillCube.Font = Enum.Font.GothamBold
+KillCube.TextSize = 14
+KillCube.Visible = false
+KillCube.Parent = ScreenGui
+
+local KillCorner = Instance.new("UICorner")
+KillCorner.CornerRadius = UDim.new(0, 8)
+KillCorner.Parent = KillCube
 
 local TopBar = Instance.new("Frame")
 TopBar.Name = "TopBar"
@@ -265,9 +374,12 @@ MakeDraggable(MiniCube, MiniCube, function()
     MiniCube.Visible = false
 end)
 
--- Global references so CloseScript can access them
-local noclipConnection = nil
-local reusableBodyVel = nil
+-- Kill Cube Drag & Click
+MakeDraggable(KillCube, KillCube, function()
+    task.spawn(function()
+        PerformKillAll()
+    end)
+end)
 
 local function CloseScript()
     if not ScriptActive then return end
@@ -322,15 +434,6 @@ local function CloseScript()
 end
 
 CloseBtn.MouseButton1Click:Connect(CloseScript)
-
--- Also close script when Escape is pressed
-table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.KeyCode == Enum.KeyCode.Escape then
-        if ScreenGui and ScreenGui.Parent then
-            CloseScript()
-        end
-    end
-end))
 
 -- ================= MAIN PAGE ================= --
 local MainPage = CreatePage("Main")
@@ -580,6 +683,64 @@ SpeedBox.FocusLost:Connect(function()
     end
 end)
 
+-- ================= KILL PAGE ================= --
+local KillPage = CreatePage("Kill")
+CreateTabButton("Kill", "Kill")
+
+local AutoKillBtn = Instance.new("TextButton")
+AutoKillBtn.Size = UDim2.new(1, -20, 0, 40)
+AutoKillBtn.Position = UDim2.new(0, 10, 0, 10)
+AutoKillBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+AutoKillBtn.Text = "Auto Kill All: OFF"
+AutoKillBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoKillBtn.Font = Enum.Font.GothamBold
+AutoKillBtn.TextSize = 14
+AutoKillBtn.Parent = KillPage
+
+local AutoKillCorner = Instance.new("UICorner")
+AutoKillCorner.CornerRadius = UDim.new(0, 6)
+AutoKillCorner.Parent = AutoKillBtn
+
+AutoKillBtn.MouseButton1Click:Connect(function()
+    State.AutoKillAllEnabled = not State.AutoKillAllEnabled
+    AutoKillBtn.Text = "Auto Kill All: " .. (State.AutoKillAllEnabled and "ON" or "OFF")
+    AutoKillBtn.BackgroundColor3 = State.AutoKillAllEnabled and Color3.fromRGB(150, 40, 40) or Color3.fromRGB(35, 35, 35)
+end)
+
+-- Make it a Button Checkbox
+local KillBtnContainer = Instance.new("Frame")
+KillBtnContainer.Size = UDim2.new(1, -20, 0, 30)
+KillBtnContainer.BackgroundTransparency = 1
+KillBtnContainer.Parent = KillPage
+
+local KillBtnBox = Instance.new("TextButton")
+KillBtnBox.Size = UDim2.new(0, 20, 0, 20)
+KillBtnBox.Position = UDim2.new(0, 10, 0.5, -10)
+KillBtnBox.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+KillBtnBox.Text = ""
+KillBtnBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+KillBtnBox.Font = Enum.Font.GothamBold
+KillBtnBox.TextSize = 14
+KillBtnBox.Parent = KillBtnContainer
+
+local KillBtnLabel = Instance.new("TextLabel")
+KillBtnLabel.Size = UDim2.new(1, -40, 1, 0)
+KillBtnLabel.Position = UDim2.new(0, 40, 0, 0)
+KillBtnLabel.BackgroundTransparency = 1
+KillBtnLabel.Text = "Make it a button"
+KillBtnLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+KillBtnLabel.Font = Enum.Font.Gotham
+KillBtnLabel.TextSize = 14
+KillBtnLabel.TextXAlignment = Enum.TextXAlignment.Left
+KillBtnLabel.Parent = KillBtnContainer
+
+KillBtnBox.MouseButton1Click:Connect(function()
+    State.KillAllButtonMode = not State.KillAllButtonMode
+    KillBtnBox.BackgroundColor3 = State.KillAllButtonMode and Color3.fromRGB(150, 40, 40) or Color3.fromRGB(35, 35, 35)
+    KillBtnBox.Text = State.KillAllButtonMode and "X" or ""
+    KillCube.Visible = State.KillAllButtonMode
+end)
+
 
 -- ================= GAME LOGIC & REMOTES ================= --
 local function FindMap()
@@ -725,7 +886,6 @@ end))
 -- ================= COIN FARM LOGIC (INSTANT HIDE & INSTANT TP) ================= --
 local blacklistedCoins = {}
 local noclipActive = false
-local wasFarming = false
 
 local function setNoclip(enabled)
     if enabled and not noclipConnection then
@@ -799,30 +959,61 @@ task.spawn(function()
         task.wait(0.1)
         if not ScriptActive then break end
 
-        -- Run if farm is enabled AND (game is Active OR (game is Prep AND we have teleported to the map))
-        if State.CoinFarmEnabled and (State.GameState == "Active" or (State.GameState == "Prep" and State.TeleportedToMap)) then
-            local char = LocalPlayer.Character
-            local myData = State.PlayersData[LocalPlayer.Name]
-            local isDead = myData and myData.Dead
+        local char = LocalPlayer.Character
+        local myData = State.PlayersData[LocalPlayer.Name]
+        local myRole = myData and myData.Role
+        local isDead = myData and myData.Dead
+        
+        -- Handle being dead
+        if isDead then
+            if wasFarming then wasFarming = false end
+            if noclipActive then setNoclip(false) end
+            if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
+            task.wait(1)
+        elseif char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChildOfClass("Humanoid") then
+            local hrp = char.HumanoidRootPart
+            local bagIsFull = State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins
             
-            -- If we are dead, stop everything and wait for next round
-            if isDead then
-                if wasFarming then
-                    wasFarming = false
-                end
+            -- 1. KILL ALL LOGIC (Takes Priority if Murderer AND (AutoKill ON OR Bag Full))
+            local shouldKillAll = State.GameState == "Active" and myRole == "Murderer" and (State.AutoKillAllEnabled or bagIsFull)
+            if shouldKillAll then
+                -- Stop farming stuff if we were
                 if noclipActive then setNoclip(false) end
                 if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-                task.wait(1)
-            elseif char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChildOfClass("Humanoid") then
+                wasFarming = false
+                
+                -- Clear any existing hold positions
+                for _, v in ipairs(hrp:GetChildren()) do
+                    if v:IsA("BodyPosition") then v:Destroy() end
+                end
+                
+                -- TP to camp
+                hrp.CFrame = CampCFrame
+                
+                -- Use BodyPosition to hold (Anchoring breaks stab)
+                local campHold = Instance.new("BodyPosition")
+                campHold.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+                campHold.P = 10000
+                campHold.D = 500
+                campHold.Position = CampCFrame.Position
+                campHold.Parent = hrp
+                
+                -- Loop kill all
+                while ScriptActive and State.GameState == "Active" and myRole == "Murderer" and not (State.PlayersData[LocalPlayer.Name] and State.PlayersData[LocalPlayer.Name].Dead) do
+                    task.spawn(PerformKillAll) -- Run in isolated thread like the manual button!
+                    task.wait(1) -- Wait 1 second before doing it again
+                end
+                
+                campHold:Destroy()
+                
+            -- 2. COIN FARM LOGIC
+            elseif State.CoinFarmEnabled and (State.GameState == "Active" or (State.GameState == "Prep" and State.TeleportedToMap)) then
                 wasFarming = true
-                local hrp = char.HumanoidRootPart
-                local myRole = myData and myData.Role
                 
                 -- Turn on Noclip if we aren't already
                 if not noclipActive then setNoclip(true) end
                 
-                -- Only check for full bag if we are Active and actually know the max coins
-                if State.GameState == "Active" and State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins then
+                if State.GameState == "Active" and bagIsFull then
                     -- Bag full
                     if myRole == "Innocent" or myRole == nil then
                         -- Instant TP to camp
@@ -834,19 +1025,20 @@ task.spawn(function()
                         hrp.CFrame = CampCFrame
                         hrp.Anchored = true
                         
-                        -- Wait for round to end or player to die
                         while ScriptActive and State.GameState == "Active" and State.CoinFarmEnabled and not (State.PlayersData[LocalPlayer.Name] and State.PlayersData[LocalPlayer.Name].Dead) do
                             task.wait(1)
                         end
                         
                         if ScriptActive then hrp.Anchored = false end
                         
-                    elseif myRole == "Murderer" or myRole == "Sheriff" then
+                    elseif myRole == "Sheriff" then
                         if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
                         setNoclip(false)
                         char:FindFirstChildOfClass("Humanoid").Health = 0
                         task.wait(2)
                     end
+                    -- Note: Murderer with full bag is handled by the shouldKillAll block above!
+                    
                 else
                     -- Bag not full (or no max coins set yet)
                     local coin = GetClosestCoin(hrp)
@@ -867,29 +1059,11 @@ task.spawn(function()
                         local reached = false
                         local startTime = tick()
                         while ScriptActive and not reached and coin:IsDescendantOf(Workspace) do
-                            -- Check if toggled off!
-                            if not State.CoinFarmEnabled then
-                                reached = true
-                                break
-                            end
-
-                            -- Check if died via remote!
+                            if not State.CoinFarmEnabled then reached = true break end
                             local currentMyData = State.PlayersData[LocalPlayer.Name]
-                            if currentMyData and currentMyData.Dead then
-                                reached = true
-                                break
-                            end
-                            
-                            -- Check if round ended!
-                            if State.GameState ~= "Active" and State.GameState ~= "Prep" then
-                                reached = true
-                                break
-                            end
-                            
-                            if State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins then
-                                reached = true
-                                break
-                            end
+                            if currentMyData and currentMyData.Dead then reached = true break end
+                            if State.GameState ~= "Active" and State.GameState ~= "Prep" then reached = true break end
+                            if State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins then reached = true break end
                             
                             local dir = targetPos - hrp.Position
                             local dist = dir.Magnitude
@@ -897,10 +1071,7 @@ task.spawn(function()
                                 reached = true
                             else
                                 reusableBodyVel.Velocity = dir.Unit * State.CoinFarmSpeed
-                                -- Anti-hang
-                                if tick() - startTime > (dist / State.CoinFarmSpeed) + 3 then
-                                    reached = true
-                                end
+                                if tick() - startTime > (dist / State.CoinFarmSpeed) + 3 then reached = true end
                             end
                             task.wait()
                         end
@@ -910,14 +1081,12 @@ task.spawn(function()
                         reusableBodyVel.Velocity = Vector3.zero
                         hrp.AssemblyLinearVelocity = Vector3.zero
                         
-                        -- Check why we stopped
                         local currentMyData = State.PlayersData[LocalPlayer.Name]
                         local shouldAbort = (not State.CoinFarmEnabled) or (currentMyData and currentMyData.Dead) or (State.GameState ~= "Active" and State.GameState ~= "Prep") or (State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins)
                         
                         if shouldAbort then
-                            -- do nothing, outer loop will clean up and TP up
+                            -- do nothing
                         else
-                            -- Hold position at the coin
                             local holdPos = Instance.new("BodyPosition")
                             holdPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
                             holdPos.P = 10000
@@ -925,9 +1094,8 @@ task.spawn(function()
                             holdPos.Position = targetPos
                             holdPos.Parent = hrp
                             
-                            task.wait(0.1) -- settle
+                            task.wait(0.1)
 
-                            -- Fire touch interest
                             if ScriptActive and coin:IsDescendantOf(Workspace) then
                                 pcall(function() firetouchinterest(hrp, coin, 0) end)
                                 task.wait(0.05)
@@ -939,10 +1107,8 @@ task.spawn(function()
                             blacklistedCoins[coin] = true
                             task.delay(2, function() blacklistedCoins[coin] = nil end)
                             
-                            -- Cooldown wait
                             local waited = 0
                             while ScriptActive and waited < 0.5 do
-                                -- Check if died or round ended during cooldown
                                 local cd = State.PlayersData[LocalPlayer.Name]
                                 if cd and cd.Dead then break end
                                 if State.GameState ~= "Active" and State.GameState ~= "Prep" then break end
@@ -955,15 +1121,12 @@ task.spawn(function()
                             holdPos:Destroy()
                         end
                     else
-                        -- No coin found! Hide 6.5 studs underground and hold position safely
+                        -- No coin found! Hide 6.5 studs underground
                         if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
                         
-                        -- Wait 1 second after teleporting to the map before going under
                         if State.GameState == "Prep" and State.TeleportTick > 0 then
                             local timeSinceTeleport = tick() - State.TeleportTick
-                            if timeSinceTeleport < 1 then
-                                task.wait(1 - timeSinceTeleport)
-                            end
+                            if timeSinceTeleport < 1 then task.wait(1 - timeSinceTeleport) end
                         end
                         
                         local hidePos = hrp.Position - Vector3.new(0, 6.5, 0)
@@ -976,7 +1139,6 @@ task.spawn(function()
                         holdPos.Position = hidePos
                         holdPos.Parent = hrp
                         
-                        -- Wait safely until a coin appears or state changes
                         while ScriptActive and not GetClosestCoin(hrp) do
                             local cd = State.PlayersData[LocalPlayer.Name]
                             if cd and cd.Dead then break end
@@ -988,21 +1150,17 @@ task.spawn(function()
                         holdPos:Destroy()
                     end
                 end
-            end
-        else
-            -- Farm disabled or in Lobby
-            if noclipActive then setNoclip(false) end
-            if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-            local c = LocalPlayer.Character
-            if c and c:FindFirstChild("HumanoidRootPart") then
-                c.HumanoidRootPart.Anchored = false
+            else
+                -- Nothing enabled
+                if noclipActive then setNoclip(false) end
+                if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
+                hrp.Anchored = false
                 
-                -- Safe Disable: If we just stopped farming, TP 7 studs up to avoid falling under the map
                 if wasFarming and State.GameState ~= "Lobby" then
-                    c.HumanoidRootPart.CFrame = c.HumanoidRootPart.CFrame + Vector3.new(0, 7, 0)
+                    hrp.CFrame = hrp.CFrame + Vector3.new(0, 7, 0)
                 end
+                wasFarming = false
             end
-            wasFarming = false
         end
     end
 end)
