@@ -4,6 +4,7 @@
     Part 2: ESP, Tabs, Minimize/Close, Role Filters
     Part 3: Coin Farm Auto-Farmer
     Part 4: Murderer Kill All (Auto Loop & Manual Button)
+    Part 5: Anti-AFK System
 ]]
 
 local Players = game:GetService("Players")
@@ -47,7 +48,8 @@ local State = {
     TeleportedToMap = false,
     TeleportTick = 0,
     AutoKillAllEnabled = false,
-    KillAllButtonMode = false
+    KillAllButtonMode = false,
+    AntiAfkEnabled = false
 }
 
 local CampCFrame = CFrame.new(0.247963816, -55.1755638, -13.1644669, -0.998459637, -1.18627419e-07, 0.0554830357, -1.20305785e-08, 1, -2.69099534e-08, -0.0554830357, -3.35434329e-08, -0.998459637)
@@ -60,6 +62,7 @@ local ScriptActive = true
 local noclipConnection = nil
 local reusableBodyVel = nil
 local wasFarming = false
+local antiAfkConn = nil
 
 if CoreGui:FindFirstChild("MM2CustomMenu") then
     CoreGui.MM2CustomMenu:Destroy()
@@ -409,6 +412,12 @@ local function CloseScript()
         reusableBodyVel = nil
     end
 
+    -- Clean up Anti-AFK
+    if antiAfkConn then
+        antiAfkConn:Disconnect()
+        antiAfkConn = nil
+    end
+
     -- Restore character safely
     local c = LocalPlayer.Character
     if c and c:FindFirstChild("HumanoidRootPart") then
@@ -680,6 +689,46 @@ SpeedBox.FocusLost:Connect(function()
         SpeedBox.Text = val
     else
         SpeedBox.Text = tostring(State.CoinFarmSpeed)
+    end
+end)
+
+-- Anti-AFK Toggle Button
+local AntiAfkBtn = Instance.new("TextButton")
+AntiAfkBtn.Size = UDim2.new(1, -20, 0, 40)
+AntiAfkBtn.Position = UDim2.new(0, 10, 0, 100)
+AntiAfkBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+AntiAfkBtn.Text = "Anti-AFK: OFF"
+AntiAfkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AntiAfkBtn.Font = Enum.Font.GothamBold
+AntiAfkBtn.TextSize = 14
+AntiAfkBtn.Parent = FarmPage
+
+local AntiAfkCorner = Instance.new("UICorner")
+AntiAfkCorner.CornerRadius = UDim.new(0, 6)
+AntiAfkCorner.Parent = AntiAfkBtn
+
+AntiAfkBtn.MouseButton1Click:Connect(function()
+    State.AntiAfkEnabled = not State.AntiAfkEnabled
+    AntiAfkBtn.Text = "Anti-AFK: " .. (State.AntiAfkEnabled and "ON" or "OFF")
+    AntiAfkBtn.BackgroundColor3 = State.AntiAfkEnabled and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(35, 35, 35)
+    
+    if State.AntiAfkEnabled then
+        if not antiAfkConn then
+            antiAfkConn = LocalPlayer.Idled:Connect(function()
+                pcall(function()
+                    VirtualUser:CaptureController()
+                    VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+                    task.wait(1)
+                    VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+                end)
+            end)
+        end
+    else
+        -- Fully disconnect when turned off
+        if antiAfkConn then
+            antiAfkConn:Disconnect()
+            antiAfkConn = nil
+        end
     end
 end)
 
