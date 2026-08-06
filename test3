@@ -4,7 +4,7 @@
     Part 2: ESP, Tabs, Minimize/Close, Role Filters
     Part 3: Coin Farm Auto-Farmer
     Part 4: Murderer Kill All (Auto Loop & Manual Button)
-    Part 5: Anti-AFK System
+    Part 5: Anti-AFK System & Mid-Game Injection Fix
 ]]
 
 local Players = game:GetService("Players")
@@ -40,7 +40,8 @@ local State = {
     ESPRoles = {
         Murderer = true,
         Sheriff = true,
-        Innocent = true
+        Innocent = true,
+        Hero = true
     },
     CoinFarmEnabled = false,
     CoinFarmYOffset = -6.5,
@@ -539,6 +540,8 @@ local function UpdateDashboard()
                 lbl.TextColor3 = Color3.fromRGB(255, 50, 50)
             elseif role == "Sheriff" then
                 lbl.TextColor3 = Color3.fromRGB(50, 150, 255)
+            elseif role == "Hero" then
+                lbl.TextColor3 = Color3.fromRGB(255, 215, 0) -- Gold/Yellow for Hero
             elseif role == "Innocent" then
                 lbl.TextColor3 = Color3.fromRGB(50, 255, 50)
             else
@@ -609,6 +612,7 @@ end
 
 CreateRoleCheckbox("Murderer", Color3.fromRGB(255, 50, 50))
 CreateRoleCheckbox("Sheriff", Color3.fromRGB(50, 150, 255))
+CreateRoleCheckbox("Hero", Color3.fromRGB(255, 215, 0))
 CreateRoleCheckbox("Innocent", Color3.fromRGB(50, 255, 50))
 
 -- ================= COIN FARM PAGE ================= --
@@ -724,7 +728,6 @@ AntiAfkBtn.MouseButton1Click:Connect(function()
             end)
         end
     else
-        -- Fully disconnect when turned off
         if antiAfkConn then
             antiAfkConn:Disconnect()
             antiAfkConn = nil
@@ -803,18 +806,26 @@ local function FindMap()
     return nil
 end
 
-table.insert(connections, FadeEvent.OnClientEvent:Connect(function(data)
-    State.PlayersData = {}
+-- Bulletproof PlayerData Parser
+local function ParsePlayerData(data)
     if typeof(data) == "table" then
+        -- If it's an array/dictionary of players
         for _, info in pairs(data) do
             if typeof(info) == "table" and info.UserId then
                 local p = Players:GetPlayerByUserId(info.UserId)
                 if p then
-                    State.PlayersData[p.Name] = { Role = info.Role, Dead = info.Dead }
+                    if not State.PlayersData[p.Name] then State.PlayersData[p.Name] = {} end
+                    if info.Role ~= nil then State.PlayersData[p.Name].Role = info.Role end
+                    if info.Dead ~= nil then State.PlayersData[p.Name].Dead = info.Dead end
                 end
             end
         end
     end
+end
+
+table.insert(connections, FadeEvent.OnClientEvent:Connect(function(data)
+    State.PlayersData = {}
+    ParsePlayerData(data)
     
     State.GameState = "Prep"
     State.TeleportedToMap = false
@@ -835,28 +846,23 @@ table.insert(connections, TeleportToPartEvent.OnClientEvent:Connect(function(spa
     end
 end))
 
-table.insert(connections, PlayerDataChangedEvent.OnClientEvent:Connect(function(data)
-    if typeof(data) == "table" then
-        for _, info in pairs(data) do
-            if typeof(info) == "table" and info.UserId then
-                local p = Players:GetPlayerByUserId(info.UserId)
-                if p then
-                    if State.PlayersData[p.Name] then
-                        State.PlayersData[p.Name].Role = info.Role or State.PlayersData[p.Name].Role
-                        State.PlayersData[p.Name].Dead = info.Dead or State.PlayersData[p.Name].Dead
-                    else
-                        State.PlayersData[p.Name] = { Role = info.Role, Dead = info.Dead }
-                    end
-                end
-            end
-        end
+table.insert(connections, PlayerDataChangedEvent.OnClientEvent:Connect(function(...)
+    local args = {...}
+    if typeof(args[1]) == "table" then
+        ParsePlayerData(args[1])
+    elseif typeof(args[1]) == "Instance" and args[1]:IsA("Player") and typeof(args[2]) == "table" then
+        local p = args[1]
+        local info = args[2]
+        if not State.PlayersData[p.Name] then State.PlayersData[p.Name] = {} end
+        if info.Role ~= nil then State.PlayersData[p.Name].Role = info.Role end
+        if info.Dead ~= nil then State.PlayersData[p.Name].Dead = info.Dead end
     end
     UpdateDashboard()
 end))
 
 table.insert(connections, CoinsStartedEvent.OnClientEvent:Connect(function(data)
     State.GameState = "Active"
-    State.TeleportedToMap = true -- In case we missed it
+    State.TeleportedToMap = true 
     if typeof(data) == "table" and data.Coin then
         State.MaxCoins = data.Coin.CollectionLimit or 0
         State.LocalCoins = data.Coin.CollectedAmount or 0
@@ -895,6 +901,7 @@ end
 local function GetRoleColor(role)
     if role == "Murderer" then return Color3.fromRGB(255, 0, 0)
     elseif role == "Sheriff" then return Color3.fromRGB(0, 0, 255)
+    elseif role == "Hero" then return Color3.fromRGB(255, 215, 0)
     elseif role == "Innocent" then return Color3.fromRGB(0, 255, 0)
     else return Color3.fromRGB(255, 255, 255) end
 end
@@ -1023,9 +1030,13 @@ task.spawn(function()
             local hrp = char.HumanoidRootPart
             local bagIsFull = State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins
             
-            -- 1. KILL ALL LOGIC (Takes Priority if Murderer AND (AutoKill ON OR Bag Full))
-            local shouldKillAll = State.GameState == "Active" and myRole == "Murderer" and (State.AutoKillAllEnabled or bagIsFull)
+            -- 1. KILL ALL LOGIC 
+            -- Triggers if: Murderer AND (AutoKill is ON OR (CoinFarm is ON AND Bag is Full))
+            local shouldKillAll = State.GameState == "Active" and myRole == "Murderer" and (State.AutoKillAllEnabled or (State.CoinFarmEnabled and bagIsFull))
             if shouldKillAll then
+                -- Print to console exactly why it triggered so we can track bugs
+                print("[Kill All Debug] Triggered! AutoKill:", State.AutoKillAllEnabled, "| Farm:", State.CoinFarmEnabled, "| BagFull:", bagIsFull, "| Coins:", State.LocalCoins, "/", State.MaxCoins)
+                
                 -- Stop farming stuff if we were
                 if noclipActive then setNoclip(false) end
                 if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
@@ -1080,7 +1091,7 @@ task.spawn(function()
                         
                         if ScriptActive then hrp.Anchored = false end
                         
-                    elseif myRole == "Sheriff" then
+                    elseif myRole == "Sheriff" or myRole == "Hero" then
                         if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
                         setNoclip(false)
                         char:FindFirstChildOfClass("Humanoid").Health = 0
@@ -1213,6 +1224,18 @@ task.spawn(function()
         end
     end
 end)
+
+-- ================= MID-GAME INITIALIZATION SCAN ================= --
+-- If injected mid-round, instantly set the game state so ESP and UI work immediately
+local initMap = FindMap()
+if initMap then
+    State.MapName = initMap.Name
+    if initMap:FindFirstChild("CoinContainer") then
+        State.GameState = "Active"
+    elseif initMap:FindFirstChild("CoinAreas") then
+        State.GameState = "Prep"
+    end
+end
 
 -- Initial Dashboard render
 Pages["Main"].Visible = true
