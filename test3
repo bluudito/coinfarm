@@ -2,7 +2,7 @@
     MM2 Custom Menu
     Part 1: Core Game Logic & Dashboard
     Part 2: ESP, Tabs, Minimize/Close, Role Filters (Inc. Gun Drop ESP)
-    Part 3: Coin Farm Auto-Farmer (With Custom Cooldown)
+    Part 3: Coin Farm Auto-Farmer (Fixed Blacklist System)
     Part 4: Murderer Kill All (Auto Loop & Manual Button)
     Part 5: Anti-AFK System & Mid-Game Injection Fix
     Part 6: Event-Driven Hero Detection
@@ -1254,8 +1254,29 @@ task.spawn(function()
 
                             if not ScriptActive then break end
 
+                            -- NEW BLACKLIST LOGIC: Ignore this coin until it is removed from the Workspace
                             blacklistedCoins[coin] = true
-                            task.delay(2, function() blacklistedCoins[coin] = nil end)
+                            local blacklistConn
+                            blacklistConn = coin.AncestryChanged:Connect(function()
+                                if not coin:IsDescendantOf(Workspace) then
+                                    blacklistedCoins[coin] = nil
+                                    if blacklistConn then
+                                        blacklistConn:Disconnect()
+                                        blacklistConn = nil
+                                    end
+                                end
+                            end)
+                            
+                            -- Fail-safe: If the server never deletes the coin, un-blacklist it after 5 seconds
+                            task.delay(5, function()
+                                if blacklistedCoins[coin] then
+                                    blacklistedCoins[coin] = nil
+                                    if blacklistConn then
+                                        blacklistConn:Disconnect()
+                                        blacklistConn = nil
+                                    end
+                                end
+                            end)
                             
                             local waited = 0
                             while ScriptActive and waited < State.CoinFarmCooldown do
