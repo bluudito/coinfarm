@@ -1,11 +1,11 @@
 --[[
     MM2 Custom Menu
-    Part 1: Core Game Logic & Dashboard
+    Part 1: Core Game Logic & Dashboard (Inc. GetCurrentPlayerData Sync)
     Part 2: ESP, Tabs, Minimize/Close, Role Filters (Inc. Gun Drop ESP)
-    Part 3: Coin Farm Auto-Farmer (Fixed Blacklist System)
-    Part 4: Murderer Kill All (Auto Loop & Manual Button)
-    Part 5: Anti-AFK System & Mid-Game Injection Fix
-    Part 6: Event-Driven Hero Detection
+    Part 3: Coin Farm Auto-Farmer (Physics-Safe Hovering - No Flashing/No TP Up!)
+    Part 4: Murderer Kill All (Dead Guard & Live Role Check)
+    Part 5: Anti-AFK System (Randomized) & Mid-Game Injection Fix
+    Part 6: Event-Driven Hero Detection (Hang & Race Condition Proof)
 ]]
 
 local Players = game:GetService("Players")
@@ -29,11 +29,13 @@ local CoinsStartedEvent = GameplayRemotes:WaitForChild("CoinsStarted")
 local CoinCollectedEvent = GameplayRemotes:WaitForChild("CoinCollected")
 local Clear1v1Event = CustomGamesRemotes:WaitForChild("Clear1v1")
 local TeleportToPartEvent = GameplayRemotes:WaitForChild("TeleportToPart")
+local GetCurrentPlayerDataFunc = GameplayRemotes:FindFirstChild("GetCurrentPlayerData")
 
 -- State Management
 local State = {
     GameState = "Lobby",
     MapName = "None",
+    MapInstance = nil, 
     PlayersData = {},
     LocalCoins = 0,
     MaxCoins = 0,
@@ -66,9 +68,56 @@ local noclipConnection = nil
 local reusableBodyVel = nil
 local wasFarming = false
 local antiAfkConn = nil
+local lastSafeCFrame = nil
+local blacklistConns = {}
 
 if CoreGui:FindFirstChild("MM2CustomMenu") then
     CoreGui.MM2CustomMenu:Destroy()
+end
+
+-- Cleanup leaving players ESP
+table.insert(connections, Players.PlayerRemoving:Connect(function(player)
+    if espObjects[player] then
+        espObjects[player]:Destroy()
+        espObjects[player] = nil
+    end
+end))
+
+-- ================= DATA SYNC LOGIC ================= --
+local function ParsePlayerData(data)
+    if typeof(data) ~= "table" then return end
+    for _, info in pairs(data) do
+        if typeof(info) == "table" and info.UserId then
+            local p = Players:GetPlayerByUserId(info.UserId)
+            if p then
+                if not State.PlayersData[p.Name] then State.PlayersData[p.Name] = {} end
+                if info.Role ~= nil then State.PlayersData[p.Name].Role = info.Role end
+                if info.Dead ~= nil then State.PlayersData[p.Name].Dead = info.Dead end
+            end
+        end
+    end
+end
+
+-- Helper to safely invoke the remote without hanging the thread
+local function FetchCurrentPlayerData()
+    if not GetCurrentPlayerDataFunc then return nil end
+    
+    local result = nil
+    local done = false
+    
+    task.spawn(function()
+        pcall(function()
+            result = GetCurrentPlayerDataFunc:InvokeServer()
+        end)
+        done = true
+    end)
+    
+    local startTime = tick()
+    while not done and tick() - startTime < 3 do
+        task.wait(0.1)
+    end
+    
+    return result
 end
 
 -- ================= KILL ALL LOGIC ================= --
@@ -82,8 +131,8 @@ local function EquipKnife()
         local humanoid = char:FindFirstChildOfClass("Humanoid")
         if humanoid then
             humanoid:EquipTool(backpack.Knife)
-            task.wait() 
-            return true
+            task.wait(0.1)
+            return char:FindFirstChild("Knife") ~= nil
         end
     end
     return false
@@ -106,17 +155,22 @@ local function PerformKillAll()
     
     for _, targetPlr in ipairs(Players:GetPlayers()) do
         if targetPlr ~= LocalPlayer and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") then
-            local targetHrp = targetPlr.Character.HumanoidRootPart
-            savedPositions[targetHrp] = targetHrp.CFrame
-            table.insert(targets, targetHrp)
-            
-            for _, part in ipairs(targetPlr.Character:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = false
+            local tData = State.PlayersData[targetPlr.Name]
+            if tData and not tData.Dead then
+                local targetHrp = targetPlr.Character.HumanoidRootPart
+                savedPositions[targetHrp] = targetHrp.CFrame
+                table.insert(targets, targetHrp)
+                
+                for _, part in ipairs(targetPlr.Character:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
                 end
             end
         end
     end
+    
+    if #targets == 0 then return end
     
     local holdingLoop
     holdingLoop = RunService.Heartbeat:Connect(function()
@@ -160,9 +214,7 @@ MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 MainFrame.BorderSizePixel = 0
 MainFrame.Parent = ScreenGui
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 8)
-MainCorner.Parent = MainFrame
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 
 local MiniCube = Instance.new("TextButton")
 MiniCube.Name = "MiniCube"
@@ -176,9 +228,7 @@ MiniCube.TextSize = 14
 MiniCube.Visible = false
 MiniCube.Parent = ScreenGui
 
-local MiniCorner = Instance.new("UICorner")
-MiniCorner.CornerRadius = UDim.new(0, 8)
-MiniCorner.Parent = MiniCube
+Instance.new("UICorner", MiniCube).CornerRadius = UDim.new(0, 8)
 
 local KillCube = Instance.new("TextButton")
 KillCube.Name = "KillCube"
@@ -192,9 +242,7 @@ KillCube.TextSize = 14
 KillCube.Visible = false
 KillCube.Parent = ScreenGui
 
-local KillCorner = Instance.new("UICorner")
-KillCorner.CornerRadius = UDim.new(0, 8)
-KillCorner.Parent = KillCube
+Instance.new("UICorner", KillCube).CornerRadius = UDim.new(0, 8)
 
 local TopBar = Instance.new("Frame")
 TopBar.Name = "TopBar"
@@ -203,9 +251,7 @@ TopBar.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
 TopBar.BorderSizePixel = 0
 TopBar.Parent = MainFrame
 
-local TopCorner = Instance.new("UICorner")
-TopCorner.CornerRadius = UDim.new(0, 8)
-TopCorner.Parent = TopBar
+Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 8)
 
 local TopBarFix = Instance.new("Frame")
 TopBarFix.Size = UDim2.new(1, 0, 0, 10)
@@ -281,10 +327,7 @@ local function CreatePage(name)
     Page.Visible = false
     Page.Parent = PagesContainer
     
-    local Layout = Instance.new("UIListLayout")
-    Layout.Padding = UDim.new(0, 10)
-    Layout.SortOrder = Enum.SortOrder.LayoutOrder
-    Layout.Parent = Page
+    Instance.new("UIListLayout", Page).Padding = UDim.new(0, 10)
     
     Pages[name] = Page
     return Page
@@ -301,9 +344,7 @@ local function CreateTabButton(name, pageName)
     Btn.AutoButtonColor = true
     Btn.Parent = Sidebar
     
-    local Corner = Instance.new("UICorner")
-    Corner.CornerRadius = UDim.new(0, 6)
-    Corner.Parent = Btn
+    Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 6)
     
     Btn.MouseButton1Click:Connect(function()
         for _, page in pairs(Pages) do page.Visible = false end
@@ -340,9 +381,7 @@ local function MakeDraggable(frame, dragPart, onClickCallback)
     table.insert(connections, UserInputService.InputChanged:Connect(function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local delta = input.Position - dragStart
-            if delta.Magnitude > 5 then
-                hasDragged = true
-            end
+            if delta.Magnitude > 5 then hasDragged = true end
             frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
         end
     end))
@@ -351,27 +390,23 @@ end
 MakeDraggable(MainFrame, TopBar, nil)
 
 MinBtn.MouseButton1Click:Connect(function()
-    local centerX = MainFrame.Position.X.Offset + (MainFrame.Size.X.Offset / 2) - (MiniCube.Size.X.Offset / 2)
-    local centerY = MainFrame.Position.Y.Offset + (MainFrame.Size.Y.Offset / 2) - (MiniCube.Size.Y.Offset / 2)
-    MiniCube.Position = UDim2.new(MainFrame.Position.X.Scale, centerX, MainFrame.Position.Y.Scale, centerY)
-    
+    local cx = MainFrame.Position.X.Offset + (MainFrame.Size.X.Offset / 2) - (MiniCube.Size.X.Offset / 2)
+    local cy = MainFrame.Position.Y.Offset + (MainFrame.Size.Y.Offset / 2) - (MiniCube.Size.Y.Offset / 2)
+    MiniCube.Position = UDim2.new(MainFrame.Position.X.Scale, cx, MainFrame.Position.Y.Scale, cy)
     MainFrame.Visible = false
     MiniCube.Visible = true
 end)
 
 MakeDraggable(MiniCube, MiniCube, function()
-    local centerX = MiniCube.Position.X.Offset + (MiniCube.Size.X.Offset / 2) - (MainFrame.Size.X.Offset / 2)
-    local centerY = MiniCube.Position.Y.Offset + (MiniCube.Size.Y.Offset / 2) - (MainFrame.Size.Y.Offset / 2)
-    MainFrame.Position = UDim2.new(MiniCube.Position.X.Scale, centerX, MiniCube.Position.Y.Scale, centerY)
-    
+    local cx = MiniCube.Position.X.Offset + (MiniCube.Size.X.Offset / 2) - (MainFrame.Size.X.Offset / 2)
+    local cy = MiniCube.Position.Y.Offset + (MiniCube.Size.Y.Offset / 2) - (MainFrame.Size.Y.Offset / 2)
+    MainFrame.Position = UDim2.new(MiniCube.Position.X.Scale, cx, MiniCube.Position.Y.Scale, cy)
     MainFrame.Visible = true
     MiniCube.Visible = false
 end)
 
 MakeDraggable(KillCube, KillCube, function()
-    task.spawn(function()
-        PerformKillAll()
-    end)
+    task.spawn(PerformKillAll)
 end)
 
 local function CloseScript()
@@ -384,21 +419,18 @@ local function CloseScript()
     espObjects = {}
 
     for _, conn in ipairs(connections) do
-        if conn and conn.Disconnect then
-            conn:Disconnect()
-        end
+        if conn and conn.Disconnect then conn:Disconnect() end
     end
+
+    for _, bConn in pairs(blacklistConns) do
+        if bConn then bConn:Disconnect() end
+    end
+    blacklistConns = {}
 
     if noclipConnection then
         noclipConnection:Disconnect()
         noclipConnection = nil
     end
-    
-    if reusableBodyVel then
-        reusableBodyVel:Destroy()
-        reusableBodyVel = nil
-    end
-
     if antiAfkConn then
         antiAfkConn:Disconnect()
         antiAfkConn = nil
@@ -407,14 +439,11 @@ local function CloseScript()
     local c = LocalPlayer.Character
     if c and c:FindFirstChild("HumanoidRootPart") then
         c.HumanoidRootPart.Anchored = false
-        
         if (State.CoinFarmEnabled or wasFarming) and State.GameState ~= "Lobby" then
-            c.HumanoidRootPart.CFrame = c.HumanoidRootPart.CFrame + Vector3.new(0, 7, 0)
-        end
-        
-        for _, part in ipairs(c:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = true
+            if lastSafeCFrame then
+                c.HumanoidRootPart.CFrame = lastSafeCFrame
+            else
+                c.HumanoidRootPart.CFrame = c.HumanoidRootPart.CFrame + Vector3.new(0, 7, 0)
             end
         end
     end
@@ -431,42 +460,25 @@ CloseBtn.MouseButton1Click:Connect(CloseScript)
 local MainPage = CreatePage("Main")
 CreateTabButton("Main", "Main")
 
-local MapLabel = Instance.new("TextLabel")
-MapLabel.Size = UDim2.new(1, -20, 0, 25)
-MapLabel.Position = UDim2.new(0, 10, 0, 10)
-MapLabel.BackgroundTransparency = 1
-MapLabel.Text = "Map: None"
-MapLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-MapLabel.Font = Enum.Font.Gotham
-MapLabel.TextSize = 14
-MapLabel.TextXAlignment = Enum.TextXAlignment.Left
-MapLabel.Parent = MainPage
+local function MakeLabel(parent, defaultText)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -20, 0, 25)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = defaultText
+    lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = parent
+    return lbl
+end
 
-local StateLabel = Instance.new("TextLabel")
-StateLabel.Size = UDim2.new(1, -20, 0, 25)
-StateLabel.Position = UDim2.new(0, 10, 0, 35)
-StateLabel.BackgroundTransparency = 1
-StateLabel.Text = "State: Lobby"
-StateLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-StateLabel.Font = Enum.Font.Gotham
-StateLabel.TextSize = 14
-StateLabel.TextXAlignment = Enum.TextXAlignment.Left
-StateLabel.Parent = MainPage
-
-local CoinLabel = Instance.new("TextLabel")
-CoinLabel.Size = UDim2.new(1, -20, 0, 25)
-CoinLabel.Position = UDim2.new(0, 10, 0, 60)
-CoinLabel.BackgroundTransparency = 1
-CoinLabel.Text = "Coins: 0 / 0"
-CoinLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-CoinLabel.Font = Enum.Font.Gotham
-CoinLabel.TextSize = 14
-CoinLabel.TextXAlignment = Enum.TextXAlignment.Left
-CoinLabel.Parent = MainPage
+local MapLabel    = MakeLabel(MainPage, "Map: None")
+local StateLabel  = MakeLabel(MainPage, "State: Lobby")
+local CoinLabel   = MakeLabel(MainPage, "Coins: 0 / 0")
 
 local PlayerListLabel = Instance.new("TextLabel")
 PlayerListLabel.Size = UDim2.new(1, -20, 0, 20)
-PlayerListLabel.Position = UDim2.new(0, 10, 0, 95)
 PlayerListLabel.BackgroundTransparency = 1
 PlayerListLabel.Text = "--- Waiting for next round ---"
 PlayerListLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
@@ -477,23 +489,26 @@ PlayerListLabel.Parent = MainPage
 
 local PlayerListFrame = Instance.new("Frame")
 PlayerListFrame.Size = UDim2.new(1, -20, 0, 150)
-PlayerListFrame.Position = UDim2.new(0, 10, 0, 120)
 PlayerListFrame.BackgroundTransparency = 1
 PlayerListFrame.Parent = MainPage
 
-local PlayerListLayout = Instance.new("UIListLayout")
-PlayerListLayout.Padding = UDim.new(0, 5)
-PlayerListLayout.Parent = PlayerListFrame
+Instance.new("UIListLayout", PlayerListFrame).Padding = UDim.new(0, 5)
+
+local ROLE_COLORS = {
+    Murderer = Color3.fromRGB(255, 50, 50),
+    Sheriff  = Color3.fromRGB(50, 150, 255),
+    Hero     = Color3.fromRGB(255, 215, 0),
+    Innocent = Color3.fromRGB(50, 255, 50),
+}
 
 local function UpdateDashboard()
     MapLabel.Text = "Map: " .. State.MapName
-    
+
     local stateText = State.GameState
     if State.GameState == "Prep" and State.TeleportedToMap then
         stateText = "Prep (On Map)"
     end
     StateLabel.Text = "State: " .. stateText
-    
     CoinLabel.Text = "Coins: " .. State.LocalCoins .. " / " .. State.MaxCoins
 
     for _, child in ipairs(PlayerListFrame:GetChildren()) do
@@ -511,24 +526,11 @@ local function UpdateDashboard()
             lbl.Font = Enum.Font.Gotham
             lbl.TextSize = 13
             lbl.TextXAlignment = Enum.TextXAlignment.Left
-            
+
             local role = data.Role or "Unknown"
             local status = data.Dead and " (Dead)" or ""
             lbl.Text = name .. " - " .. role .. status
-            
-            if data.Dead then
-                lbl.TextColor3 = Color3.fromRGB(120, 120, 120)
-            elseif role == "Murderer" then
-                lbl.TextColor3 = Color3.fromRGB(255, 50, 50)
-            elseif role == "Sheriff" then
-                lbl.TextColor3 = Color3.fromRGB(50, 150, 255)
-            elseif role == "Hero" then
-                lbl.TextColor3 = Color3.fromRGB(255, 215, 0)
-            elseif role == "Innocent" then
-                lbl.TextColor3 = Color3.fromRGB(50, 255, 50)
-            else
-                lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-            end
+            lbl.TextColor3 = data.Dead and Color3.fromRGB(120, 120, 120) or (ROLE_COLORS[role] or Color3.fromRGB(255, 255, 255))
             lbl.Parent = PlayerListFrame
         end
     end
@@ -540,7 +542,6 @@ CreateTabButton("ESP", "ESP")
 
 local ESPToggleBtn = Instance.new("TextButton")
 ESPToggleBtn.Size = UDim2.new(1, -20, 0, 40)
-ESPToggleBtn.Position = UDim2.new(0, 10, 0, 10)
 ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 ESPToggleBtn.Text = "ESP: OFF"
 ESPToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -548,9 +549,7 @@ ESPToggleBtn.Font = Enum.Font.GothamBold
 ESPToggleBtn.TextSize = 14
 ESPToggleBtn.Parent = ESPPage
 
-local ESPCorner = Instance.new("UICorner")
-ESPCorner.CornerRadius = UDim.new(0, 6)
-ESPCorner.Parent = ESPToggleBtn
+Instance.new("UICorner", ESPToggleBtn).CornerRadius = UDim.new(0, 6)
 
 ESPToggleBtn.MouseButton1Click:Connect(function()
     State.ESPEnabled = not State.ESPEnabled
@@ -592,10 +591,10 @@ local function CreateRoleCheckbox(roleName, color)
     end)
 end
 
-CreateRoleCheckbox("Murderer", Color3.fromRGB(255, 50, 50))
-CreateRoleCheckbox("Sheriff", Color3.fromRGB(50, 150, 255))
-CreateRoleCheckbox("Hero", Color3.fromRGB(255, 215, 0))
-CreateRoleCheckbox("Innocent", Color3.fromRGB(50, 255, 50))
+CreateRoleCheckbox("Murderer", ROLE_COLORS.Murderer)
+CreateRoleCheckbox("Sheriff",  ROLE_COLORS.Sheriff)
+CreateRoleCheckbox("Hero",     ROLE_COLORS.Hero)
+CreateRoleCheckbox("Innocent", ROLE_COLORS.Innocent)
 
 -- ================= COIN FARM PAGE ================= --
 local FarmPage = CreatePage("Coin Farm")
@@ -603,7 +602,6 @@ CreateTabButton("Coin Farm", "Coin Farm")
 
 local FarmToggleBtn = Instance.new("TextButton")
 FarmToggleBtn.Size = UDim2.new(1, -20, 0, 40)
-FarmToggleBtn.Position = UDim2.new(0, 10, 0, 10)
 FarmToggleBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 FarmToggleBtn.Text = "Coin Farm: OFF"
 FarmToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -611,14 +609,13 @@ FarmToggleBtn.Font = Enum.Font.GothamBold
 FarmToggleBtn.TextSize = 14
 FarmToggleBtn.Parent = FarmPage
 
-local FarmCorner = Instance.new("UICorner")
-FarmCorner.CornerRadius = UDim.new(0, 6)
-FarmCorner.Parent = FarmToggleBtn
+Instance.new("UICorner", FarmToggleBtn).CornerRadius = UDim.new(0, 6)
 
 FarmToggleBtn.MouseButton1Click:Connect(function()
     State.CoinFarmEnabled = not State.CoinFarmEnabled
     FarmToggleBtn.Text = "Coin Farm: " .. (State.CoinFarmEnabled and "ON" or "OFF")
     FarmToggleBtn.BackgroundColor3 = State.CoinFarmEnabled and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(35, 35, 35)
+    if not State.CoinFarmEnabled then wasFarming = false end
 end)
 
 local function CreateFarmSetting(settingName, defaultVal)
@@ -649,10 +646,7 @@ local function CreateFarmSetting(settingName, defaultVal)
     Box.ClearTextOnFocus = false
     Box.Parent = Container
 
-    local BoxCorner = Instance.new("UICorner")
-    BoxCorner.CornerRadius = UDim.new(0, 6)
-    BoxCorner.Parent = Box
-
+    Instance.new("UICorner", Box).CornerRadius = UDim.new(0, 6)
     return Box
 end
 
@@ -661,7 +655,7 @@ YOffsetBox.FocusLost:Connect(function()
     local val = tonumber(YOffsetBox.Text)
     if val then
         State.CoinFarmYOffset = val
-        YOffsetBox.Text = val
+        YOffsetBox.Text = tostring(val)
     else
         YOffsetBox.Text = tostring(State.CoinFarmYOffset)
     end
@@ -672,7 +666,7 @@ SpeedBox.FocusLost:Connect(function()
     local val = tonumber(SpeedBox.Text)
     if val and val > 0 then
         State.CoinFarmSpeed = val
-        SpeedBox.Text = val
+        SpeedBox.Text = tostring(val)
     else
         SpeedBox.Text = tostring(State.CoinFarmSpeed)
     end
@@ -683,7 +677,7 @@ CooldownBox.FocusLost:Connect(function()
     local val = tonumber(CooldownBox.Text)
     if val and val >= 0 then
         State.CoinFarmCooldown = val
-        CooldownBox.Text = val
+        CooldownBox.Text = tostring(val)
     else
         CooldownBox.Text = tostring(State.CoinFarmCooldown)
     end
@@ -699,23 +693,22 @@ AntiAfkBtn.Font = Enum.Font.GothamBold
 AntiAfkBtn.TextSize = 14
 AntiAfkBtn.Parent = FarmPage
 
-local AntiAfkCorner = Instance.new("UICorner")
-AntiAfkCorner.CornerRadius = UDim.new(0, 6)
-AntiAfkCorner.Parent = AntiAfkBtn
+Instance.new("UICorner", AntiAfkBtn).CornerRadius = UDim.new(0, 6)
 
 AntiAfkBtn.MouseButton1Click:Connect(function()
     State.AntiAfkEnabled = not State.AntiAfkEnabled
     AntiAfkBtn.Text = "Anti-AFK: " .. (State.AntiAfkEnabled and "ON" or "OFF")
     AntiAfkBtn.BackgroundColor3 = State.AntiAfkEnabled and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(35, 35, 35)
-    
+
     if State.AntiAfkEnabled then
         if not antiAfkConn then
             antiAfkConn = LocalPlayer.Idled:Connect(function()
                 pcall(function()
+                    local randVec = Vector2.new(math.random(-50, 50), math.random(-50, 50))
                     VirtualUser:CaptureController()
-                    VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-                    task.wait(1)
-                    VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+                    VirtualUser:Button2Down(randVec, workspace.CurrentCamera.CFrame)
+                    task.wait(math.random(8, 15) / 10)
+                    VirtualUser:Button2Up(randVec, workspace.CurrentCamera.CFrame)
                 end)
             end)
         end
@@ -733,7 +726,6 @@ CreateTabButton("Kill", "Kill")
 
 local AutoKillBtn = Instance.new("TextButton")
 AutoKillBtn.Size = UDim2.new(1, -20, 0, 40)
-AutoKillBtn.Position = UDim2.new(0, 10, 0, 10)
 AutoKillBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 AutoKillBtn.Text = "Auto Kill All: OFF"
 AutoKillBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -741,9 +733,7 @@ AutoKillBtn.Font = Enum.Font.GothamBold
 AutoKillBtn.TextSize = 14
 AutoKillBtn.Parent = KillPage
 
-local AutoKillCorner = Instance.new("UICorner")
-AutoKillCorner.CornerRadius = UDim.new(0, 6)
-AutoKillCorner.Parent = AutoKillBtn
+Instance.new("UICorner", AutoKillBtn).CornerRadius = UDim.new(0, 6)
 
 AutoKillBtn.MouseButton1Click:Connect(function()
     State.AutoKillAllEnabled = not State.AutoKillAllEnabled
@@ -785,31 +775,14 @@ KillBtnBox.MouseButton1Click:Connect(function()
 end)
 
 
--- ================= GAME LOGIC & REMOTES ================= --
+-- ================= GAME REMOTES ================= --
 local function FindMap()
     for _, obj in ipairs(Workspace:GetChildren()) do
-        if obj:IsA("Model") or obj:IsA("Folder") then
-            if obj:FindFirstChild("CoinAreas") or obj:FindFirstChild("CoinContainer") then
-                return obj
-            end
+        if (obj:IsA("Model") or obj:IsA("Folder")) and (obj:FindFirstChild("CoinAreas") or obj:FindFirstChild("CoinContainer")) then
+            return obj
         end
     end
     return nil
-end
-
-local function ParsePlayerData(data)
-    if typeof(data) == "table" then
-        for _, info in pairs(data) do
-            if typeof(info) == "table" and info.UserId then
-                local p = Players:GetPlayerByUserId(info.UserId)
-                if p then
-                    if not State.PlayersData[p.Name] then State.PlayersData[p.Name] = {} end
-                    if info.Role ~= nil then State.PlayersData[p.Name].Role = info.Role end
-                    if info.Dead ~= nil then State.PlayersData[p.Name].Dead = info.Dead end
-                end
-            end
-        end
-    end
 end
 
 table.insert(connections, FadeEvent.OnClientEvent:Connect(function(data)
@@ -823,11 +796,12 @@ table.insert(connections, FadeEvent.OnClientEvent:Connect(function(data)
     State.MaxCoins = 0
     
     local map = FindMap()
+    State.MapInstance = map 
     State.MapName = map and map.Name or "Unknown"
     UpdateDashboard()
 end))
 
-table.insert(connections, TeleportToPartEvent.OnClientEvent:Connect(function(spawnPart)
+table.insert(connections, TeleportToPartEvent.OnClientEvent:Connect(function()
     if not State.TeleportedToMap then
         State.TeleportedToMap = true
         State.TeleportTick = tick()
@@ -857,87 +831,63 @@ table.insert(connections, PlayerDataChangedEvent.OnClientEvent:Connect(function(
     elseif typeof(args[1]) == "Instance" and args[1]:IsA("Player") and typeof(args[2]) == "table" then
         local p = args[1]
         local info = args[2]
-        if not State.PlayersData[p.Name] then State.PlayersData[p.Name] = {} end
-        if info.Role ~= nil then State.PlayersData[p.Name].Role = info.Role end
-        if info.Dead ~= nil then State.PlayersData[p.Name].Dead = info.Dead end
-        
-        if info.Role == "Sheriff" and info.Dead == true then
-            sheriffDied = true
+        if p then
+            if not State.PlayersData[p.Name] then State.PlayersData[p.Name] = {} end
+            if info.Role ~= nil then State.PlayersData[p.Name].Role = info.Role end
+            if info.Dead ~= nil then State.PlayersData[p.Name].Dead = info.Dead end
+            
+            if info.Role == "Sheriff" and info.Dead == true then
+                sheriffDied = true
+            end
         end
     end
     
     if sheriffDied then
         task.spawn(function()
-            local map = FindMap()
+            local map = State.MapInstance or FindMap()
             if not map then return end
             
             local gunDrop = map:FindFirstChild("GunDrop")
             if not gunDrop then
-                gunDrop = map:WaitForChild("GunDrop", 15)
+                local found = false
+                local conn = map.ChildAdded:Connect(function(child)
+                    if child.Name == "GunDrop" then found = true end
+                end)
+                local startTime = tick()
+                while not found and ScriptActive and State.GameState == "Active" do
+                    if tick() - startTime > 15 then break end
+                    task.wait(0.5)
+                end
+                conn:Disconnect()
+                gunDrop = map:FindFirstChild("GunDrop")
             end
             
             if not gunDrop then return end
             
-            gunDrop.AncestryChanged:Wait()
-            
-            task.wait(0.2)
-            local heroFound = false
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer then
-                    local role = State.PlayersData[player.Name] and State.PlayersData[player.Name].Role
-                    if role ~= "Dead" and role ~= "Sheriff" then
-                        local bp = player:FindFirstChild("Backpack")
-                        local char = player.Character
-                        if (bp and bp:FindFirstChild("Gun")) or (char and char:FindFirstChild("Gun")) then
-                            if not State.PlayersData[player.Name] then State.PlayersData[player.Name] = {} end
-                            State.PlayersData[player.Name].Role = "Hero"
-                            heroFound = true
-                            break
-                        end
-                    end
+            local pickedUp = false
+            if not gunDrop:IsDescendantOf(Workspace) then 
+                pickedUp = true 
+            else
+                local conn = gunDrop.AncestryChanged:Connect(function()
+                    if not gunDrop:IsDescendantOf(Workspace) then pickedUp = true end
+                end)
+                
+                local startTime = tick()
+                while not pickedUp and ScriptActive and State.GameState == "Active" do
+                    if tick() - startTime > 120 then break end
+                    task.wait(0.5)
                 end
+                conn:Disconnect()
             end
             
-            if not heroFound then
-                task.wait(1)
-                for _, player in ipairs(Players:GetPlayers()) do
-                    if player ~= LocalPlayer then
-                        local role = State.PlayersData[player.Name] and State.PlayersData[player.Name].Role
-                        if role ~= "Dead" and role ~= "Sheriff" then
-                            local bp = player:FindFirstChild("Backpack")
-                            local char = player.Character
-                            if (bp and bp:FindFirstChild("Gun")) or (char and char:FindFirstChild("Gun")) then
-                                if not State.PlayersData[player.Name] then State.PlayersData[player.Name] = {} end
-                                State.PlayersData[player.Name].Role = "Hero"
-                                heroFound = true
-                                break
-                            end
-                        end
-                    end
-                end
-            end
+            if not ScriptActive or State.GameState ~= "Active" then return end
             
-            if not heroFound then
-                task.wait(2)
-                local newGunDrop = map:FindFirstChild("GunDrop")
-                if newGunDrop then
-                    newGunDrop.AncestryChanged:Wait()
-                    task.wait(0.2)
-                    for _, player in ipairs(Players:GetPlayers()) do
-                        if player ~= LocalPlayer then
-                            local role = State.PlayersData[player.Name] and State.PlayersData[player.Name].Role
-                            if role ~= "Dead" and role ~= "Sheriff" then
-                                local bp = player:FindFirstChild("Backpack")
-                                local char = player.Character
-                                if (bp and bp:FindFirstChild("Gun")) or (char and char:FindFirstChild("Gun")) then
-                                    if not State.PlayersData[player.Name] then State.PlayersData[player.Name] = {} end
-                                    State.PlayersData[player.Name].Role = "Hero"
-                                    break
-                                end
-                            end
-                        end
-                    end
-                end
+            -- NEW HERO LOGIC: Fetch roles directly from the server!
+            task.wait(0.5)
+            local liveData = FetchCurrentPlayerData()
+            if liveData then
+                ParsePlayerData(liveData)
+                UpdateDashboard()
             end
         end)
     end
@@ -948,6 +898,7 @@ end))
 table.insert(connections, CoinsStartedEvent.OnClientEvent:Connect(function(data)
     State.GameState = "Active"
     State.TeleportedToMap = true 
+    if not State.MapInstance then State.MapInstance = FindMap() end
     if typeof(data) == "table" and data.Coin then
         State.MaxCoins = data.Coin.CollectionLimit or 0
         State.LocalCoins = data.Coin.CollectedAmount or 0
@@ -967,6 +918,7 @@ end))
 table.insert(connections, Clear1v1Event.OnClientEvent:Connect(function()
     State.GameState = "Lobby"
     State.MapName = "None"
+    State.MapInstance = nil 
     State.TeleportedToMap = false
     State.TeleportTick = 0
     State.PlayersData = {}
@@ -983,36 +935,24 @@ local function ClearESP()
     espObjects = {}
 end
 
-local function GetRoleColor(role)
-    if role == "Murderer" then return Color3.fromRGB(255, 0, 0)
-    elseif role == "Sheriff" then return Color3.fromRGB(0, 0, 255)
-    elseif role == "Hero" then return Color3.fromRGB(255, 215, 0)
-    elseif role == "Innocent" then return Color3.fromRGB(0, 255, 0)
-    else return Color3.fromRGB(255, 255, 255) end
-end
-
 table.insert(connections, RunService.RenderStepped:Connect(function()
     if State.ESPEnabled and (State.GameState == "Active" or State.GameState == "Prep") then
-        -- Player ESP
         for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                local pData = State.PlayersData[player.Name]
-                if pData and not pData.Dead and State.ESPRoles[pData.Role] then
-                    if not espObjects[player] or not espObjects[player].Parent then
-                        local hl = Instance.new("Highlight")
-                        hl.FillTransparency = 0.5
-                        hl.OutlineTransparency = 0
-                        hl.Parent = player.Character
-                        espObjects[player] = hl
-                    end
-                    espObjects[player].FillColor = GetRoleColor(pData.Role)
-                    espObjects[player].OutlineColor = GetRoleColor(pData.Role)
-                else
-                    if espObjects[player] then
-                        espObjects[player]:Destroy()
-                        espObjects[player] = nil
-                    end
+            if player == LocalPlayer then continue end
+            local pChar = player.Character
+            local pData = State.PlayersData[player.Name]
+
+            if pChar and pChar:FindFirstChild("HumanoidRootPart") and pData and not pData.Dead and State.ESPRoles[pData.Role] then
+                if not espObjects[player] or not espObjects[player].Parent then
+                    local hl = Instance.new("Highlight")
+                    hl.FillTransparency = 0.5
+                    hl.OutlineTransparency = 0
+                    hl.Parent = pChar
+                    espObjects[player] = hl
                 end
+                local col = ROLE_COLORS[pData.Role] or Color3.fromRGB(255, 255, 255)
+                espObjects[player].FillColor = col
+                espObjects[player].OutlineColor = col
             else
                 if espObjects[player] then
                     espObjects[player]:Destroy()
@@ -1021,26 +961,26 @@ table.insert(connections, RunService.RenderStepped:Connect(function()
             end
         end
         
-        -- Gun Drop ESP
-        local map = FindMap()
-        local gunDrop = map and map:FindFirstChild("GunDrop")
-        local gunDropEsp = espObjects["GunDrop"]
-        
-        if gunDrop and gunDrop:IsA("BasePart") then
-            if not gunDropEsp or not gunDropEsp.Parent then
-                gunDropEsp = Instance.new("Highlight")
-                gunDropEsp.FillTransparency = 0.3
-                gunDropEsp.OutlineTransparency = 0
-                gunDropEsp.FillColor = Color3.fromRGB(255, 215, 0) -- Gold
-                gunDropEsp.OutlineColor = Color3.fromRGB(255, 255, 0)
-                gunDropEsp.Parent = gunDrop
-                espObjects["GunDrop"] = gunDropEsp
-            end
-        else
-            -- Gun was picked up or disappeared, remove highlight
-            if gunDropEsp then
-                gunDropEsp:Destroy()
-                espObjects["GunDrop"] = nil
+        local map = State.MapInstance
+        if map then
+            local gunDrop = map:FindFirstChild("GunDrop")
+            local gunDropEsp = espObjects["GunDrop"]
+            
+            if gunDrop and (gunDrop:IsA("BasePart") or gunDrop:IsA("Model")) then
+                if not gunDropEsp or not gunDropEsp.Parent then
+                    gunDropEsp = Instance.new("Highlight")
+                    gunDropEsp.FillTransparency = 0.3
+                    gunDropEsp.OutlineTransparency = 0
+                    gunDropEsp.FillColor = Color3.fromRGB(255, 215, 0)
+                    gunDropEsp.OutlineColor = Color3.fromRGB(255, 255, 0)
+                    gunDropEsp.Parent = gunDrop
+                    espObjects["GunDrop"] = gunDropEsp
+                end
+            else
+                if gunDropEsp then
+                    gunDropEsp:Destroy()
+                    espObjects["GunDrop"] = nil
+                end
             end
         end
     else
@@ -1048,48 +988,54 @@ table.insert(connections, RunService.RenderStepped:Connect(function()
     end
 end))
 
--- ================= COIN FARM LOGIC (INSTANT HIDE & INSTANT TP) ================= --
-local blacklistedCoins = {}
-local noclipActive = false
-
+-- ================= NOCLIP (CACHED COLLISIONS) ================= --
+local savedCollisions = {}
 local function setNoclip(enabled)
-    if enabled and not noclipConnection then
+    if enabled then
+        if noclipConnection then return end
         noclipActive = true
+        savedCollisions = {}
         noclipConnection = RunService.Stepped:Connect(function()
             if not ScriptActive or not noclipActive then return end
             local char = LocalPlayer.Character
             if char then
                 for _, part in ipairs(char:GetDescendants()) do
                     if part:IsA("BasePart") then
+                        if savedCollisions[part] == nil then savedCollisions[part] = part.CanCollide end
                         part.CanCollide = false
                     end
                 end
             end
         end)
-    elseif not enabled and noclipConnection then
+    else
         noclipActive = false
-        noclipConnection:Disconnect()
-        noclipConnection = nil
+        if noclipConnection then
+            noclipConnection:Disconnect()
+            noclipConnection = nil
+        end
         local char = LocalPlayer.Character
         if char then
             for _, part in ipairs(char:GetDescendants()) do
                 if part:IsA("BasePart") then
-                    part.CanCollide = true
+                    part.CanCollide = savedCollisions[part] ~= nil and savedCollisions[part] or true
                 end
             end
         end
+        savedCollisions = {}
     end
 end
 
+-- ================= COIN FARM (NO FLASH HOVERING & NO UPWARD TP) ================= --
+local blacklistedCoins = {}
+
 local function GetClosestCoin(hrp)
-    local map = FindMap()
+    local map = State.MapInstance or FindMap()
     if not map then return nil end
     local container = map:FindFirstChild("CoinContainer")
     if not container then return nil end
-    
-    local closestCoin = nil
-    local shortestDist = math.huge
-    
+
+    local closestCoin, shortestDist = nil, math.huge
+
     for _, coin in ipairs(container:GetChildren()) do
         if not blacklistedCoins[coin] then
             local coinPart = nil
@@ -1099,13 +1045,13 @@ local function GetClosestCoin(hrp)
                 if coin.PrimaryPart then
                     coinPart = coin.PrimaryPart
                 else
-                    local ok, cframe = pcall(function() return coin:GetPivot() end)
-                    if ok then 
-                        coinPart = coin:FindFirstChildWhichIsA("BasePart", true)
-                    end
+                    local ok, result = pcall(function()
+                        return coin:FindFirstChildWhichIsA("BasePart", true)
+                    end)
+                    if ok then coinPart = result end
                 end
             end
-            
+
             if coinPart then
                 local dist = (coinPart.Position - hrp.Position).Magnitude
                 if dist < shortestDist then
@@ -1124,224 +1070,245 @@ task.spawn(function()
         if not ScriptActive then break end
 
         local char = LocalPlayer.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") or not char:FindFirstChildOfClass("Humanoid") then
+            continue
+        end
+
         local myData = State.PlayersData[LocalPlayer.Name]
         local myRole = myData and myData.Role
         local isDead = myData and myData.Dead
         
-        if isDead then
-            if wasFarming then wasFarming = false end
+        -- If we are not in the round (joined mid-game) or we are dead, don't do anything!
+        if not myData or isDead then
+            if wasFarming then
+                wasFarming = false
+                if noclipActive then setNoclip(false) end
+                if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
+            end
+            task.wait(0.5)
+            continue
+        end
+
+        local hrp = char.HumanoidRootPart
+        local bagIsFull = State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins
+
+        local shouldKillAll = State.GameState == "Active"
+            and myRole == "Murderer"
+            and (State.AutoKillAllEnabled or (State.CoinFarmEnabled and bagIsFull))
+
+        if shouldKillAll then
             if noclipActive then setNoclip(false) end
             if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-            task.wait(1)
-        elseif char and char:FindFirstChild("HumanoidRootPart") and char:FindFirstChildOfClass("Humanoid") then
-            local hrp = char.HumanoidRootPart
-            local bagIsFull = State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins
-            
-            local shouldKillAll = State.GameState == "Active" and myRole == "Murderer" and (State.AutoKillAllEnabled or (State.CoinFarmEnabled and bagIsFull))
-            if shouldKillAll then
-                if noclipActive then setNoclip(false) end
-                if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-                wasFarming = false
-                
-                for _, v in ipairs(hrp:GetChildren()) do
-                    if v:IsA("BodyPosition") then v:Destroy() end
-                end
-                
-                hrp.CFrame = CampCFrame
-                
-                local campHold = Instance.new("BodyPosition")
-                campHold.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-                campHold.P = 10000
-                campHold.D = 500
-                campHold.Position = CampCFrame.Position
-                campHold.Parent = hrp
-                
-                while ScriptActive and State.GameState == "Active" and myRole == "Murderer" and not (State.PlayersData[LocalPlayer.Name] and State.PlayersData[LocalPlayer.Name].Dead) do
-                    task.spawn(PerformKillAll)
-                    task.wait(1)
-                end
-                
-                campHold:Destroy()
-                
-            elseif State.CoinFarmEnabled and (State.GameState == "Active" or (State.GameState == "Prep" and State.TeleportedToMap)) then
-                wasFarming = true
-                
-                if not noclipActive then setNoclip(true) end
-                
-                if State.GameState == "Active" and bagIsFull then
-                    if myRole == "Innocent" or myRole == nil then
-                        if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-                        for _, v in ipairs(hrp:GetChildren()) do
-                            if v:IsA("BodyPosition") then v:Destroy() end
-                        end
-                        
-                        hrp.CFrame = CampCFrame
-                        hrp.Anchored = true
-                        
-                        while ScriptActive and State.GameState == "Active" and State.CoinFarmEnabled and not (State.PlayersData[LocalPlayer.Name] and State.PlayersData[LocalPlayer.Name].Dead) do
-                            task.wait(1)
-                        end
-                        
-                        if ScriptActive then hrp.Anchored = false end
-                        
-                    elseif myRole == "Sheriff" or myRole == "Hero" then
-                        if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-                        setNoclip(false)
-                        char:FindFirstChildOfClass("Humanoid").Health = 0
-                        task.wait(2)
+            wasFarming = false
+
+            for _, v in ipairs(hrp:GetChildren()) do
+                if v:IsA("BodyPosition") then v:Destroy() end
+            end
+
+            hrp.CFrame = CampCFrame
+
+            local campHold = Instance.new("BodyPosition")
+            campHold.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+            campHold.P = 10000
+            campHold.D = 500
+            campHold.Position = CampCFrame.Position
+            campHold.Parent = hrp
+
+            while ScriptActive and State.GameState == "Active" do
+                local cd = State.PlayersData[LocalPlayer.Name]
+                if cd and (cd.Dead or cd.Role ~= "Murderer") then break end
+                task.spawn(PerformKillAll)
+                task.wait(1)
+            end
+
+            campHold:Destroy()
+
+        elseif State.CoinFarmEnabled and (State.GameState == "Active" or (State.GameState == "Prep" and State.TeleportedToMap)) then
+            wasFarming = true
+            if not noclipActive then setNoclip(true) end
+
+            if State.GameState == "Active" and bagIsFull then
+                if myRole == "Innocent" or myRole == nil then
+                    if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
+                    for _, v in ipairs(hrp:GetChildren()) do
+                        if v:IsA("BodyPosition") then v:Destroy() end
                     end
-                    
-                else
-                    local coin = GetClosestCoin(hrp)
-                    if coin then
-                        local targetPos = Vector3.new(coin.Position.X, coin.Position.Y + State.CoinFarmYOffset, coin.Position.Z)
-                        
-                        for _, v in ipairs(hrp:GetChildren()) do
-                            if v:IsA("BodyPosition") then v:Destroy() end
-                        end
-                        if not reusableBodyVel or not reusableBodyVel:IsDescendantOf(hrp) then
-                            reusableBodyVel = Instance.new("BodyVelocity")
-                            reusableBodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-                            reusableBodyVel.Velocity = Vector3.zero
-                            reusableBodyVel.Parent = hrp
-                        end
-                        
-                        local reached = false
-                        local startTime = tick()
-                        while ScriptActive and not reached and coin:IsDescendantOf(Workspace) do
-                            if not State.CoinFarmEnabled then reached = true break end
-                            local currentMyData = State.PlayersData[LocalPlayer.Name]
-                            if currentMyData and currentMyData.Dead then reached = true break end
-                            if State.GameState ~= "Active" and State.GameState ~= "Prep" then reached = true break end
-                            if State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins then reached = true break end
-                            
-                            local dir = targetPos - hrp.Position
-                            local dist = dir.Magnitude
-                            if dist < 0.5 then
-                                reached = true
-                            else
-                                reusableBodyVel.Velocity = dir.Unit * State.CoinFarmSpeed
-                                if tick() - startTime > (dist / State.CoinFarmSpeed) + 3 then reached = true end
-                            end
-                            task.wait()
-                        end
-                        
-                        if not ScriptActive then break end
-                        
-                        reusableBodyVel.Velocity = Vector3.zero
-                        hrp.AssemblyLinearVelocity = Vector3.zero
-                        
-                        local currentMyData = State.PlayersData[LocalPlayer.Name]
-                        local shouldAbort = (not State.CoinFarmEnabled) or (currentMyData and currentMyData.Dead) or (State.GameState ~= "Active" and State.GameState ~= "Prep") or (State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins)
-                        
-                        if shouldAbort then
-                            -- do nothing
-                        else
-                            local holdPos = Instance.new("BodyPosition")
-                            holdPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-                            holdPos.P = 10000
-                            holdPos.D = 500
-                            holdPos.Position = targetPos
-                            holdPos.Parent = hrp
-                            
-                            task.wait(0.1)
 
-                            if ScriptActive and coin:IsDescendantOf(Workspace) then
-                                pcall(function() firetouchinterest(hrp, coin, 0) end)
-                                task.wait(0.05)
-                                pcall(function() firetouchinterest(hrp, coin, 1) end)
-                            end
+                    hrp.CFrame = CampCFrame
+                    hrp.Anchored = true
 
-                            if not ScriptActive then break end
-
-                            -- NEW BLACKLIST LOGIC: Ignore this coin until it is removed from the Workspace
-                            blacklistedCoins[coin] = true
-                            local blacklistConn
-                            blacklistConn = coin.AncestryChanged:Connect(function()
-                                if not coin:IsDescendantOf(Workspace) then
-                                    blacklistedCoins[coin] = nil
-                                    if blacklistConn then
-                                        blacklistConn:Disconnect()
-                                        blacklistConn = nil
-                                    end
-                                end
-                            end)
-                            
-                            -- Fail-safe: If the server never deletes the coin, un-blacklist it after 5 seconds
-                            task.delay(5, function()
-                                if blacklistedCoins[coin] then
-                                    blacklistedCoins[coin] = nil
-                                    if blacklistConn then
-                                        blacklistConn:Disconnect()
-                                        blacklistConn = nil
-                                    end
-                                end
-                            end)
-                            
-                            local waited = 0
-                            while ScriptActive and waited < State.CoinFarmCooldown do
-                                local cd = State.PlayersData[LocalPlayer.Name]
-                                if cd and cd.Dead then break end
-                                if State.GameState ~= "Active" and State.GameState ~= "Prep" then break end
-                                if not State.CoinFarmEnabled then break end
-                                if State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins then break end
-                                task.wait(0.1)
-                                waited = waited + 0.1
-                            end
-                            
-                            holdPos:Destroy()
-                        end
-                    else
-                        if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-                        
-                        if State.GameState == "Prep" and State.TeleportTick > 0 then
-                            local timeSinceTeleport = tick() - State.TeleportTick
-                            if timeSinceTeleport < 1 then task.wait(1 - timeSinceTeleport) end
-                        end
-                        
-                        local hidePos = hrp.Position - Vector3.new(0, 6.5, 0)
-                        hrp.CFrame = CFrame.new(hidePos)
-                        
-                        local holdPos = Instance.new("BodyPosition")
-                        holdPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-                        holdPos.P = 10000
-                        holdPos.D = 500
-                        holdPos.Position = hidePos
-                        holdPos.Parent = hrp
-                        
-                        while ScriptActive and not GetClosestCoin(hrp) do
-                            local cd = State.PlayersData[LocalPlayer.Name]
-                            if cd and cd.Dead then break end
-                            if State.GameState ~= "Active" and State.GameState ~= "Prep" then break end
-                            if not State.CoinFarmEnabled then break end
-                            task.wait(0.1)
-                        end
-                        
-                        holdPos:Destroy()
+                    while ScriptActive and State.GameState == "Active" and State.CoinFarmEnabled do
+                        local cd = State.PlayersData[LocalPlayer.Name]
+                        if cd and cd.Dead then break end
+                        task.wait(1)
                     end
+
+                    if ScriptActive then hrp.Anchored = false end
+
+                elseif myRole == "Sheriff" or myRole == "Hero" then
+                    if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
+                    setNoclip(false)
+                    char:FindFirstChildOfClass("Humanoid").Health = 0
+                    task.wait(2)
                 end
             else
-                if noclipActive then setNoclip(false) end
-                if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-                hrp.Anchored = false
-                
-                if wasFarming and State.GameState ~= "Lobby" then
-                    hrp.CFrame = hrp.CFrame + Vector3.new(0, 7, 0)
+                local coin = GetClosestCoin(hrp)
+                if coin then
+                    local targetPos = Vector3.new(coin.Position.X, coin.Position.Y + State.CoinFarmYOffset, coin.Position.Z)
+
+                    -- Ensure BodyVelocity exists
+                    if not reusableBodyVel or not reusableBodyVel.Parent then
+                        reusableBodyVel = Instance.new("BodyVelocity")
+                        reusableBodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+                        reusableBodyVel.Velocity = Vector3.zero
+                        reusableBodyVel.Parent = hrp
+                    end
+
+                    local reached = false
+                    local startTime = tick()
+                    while ScriptActive and not reached and coin:IsDescendantOf(Workspace) do
+                        if not State.CoinFarmEnabled then reached = true break end
+                        local currentMyData = State.PlayersData[LocalPlayer.Name]
+                        if currentMyData and currentMyData.Dead then reached = true break end
+                        if State.GameState ~= "Active" and State.GameState ~= "Prep" then reached = true break end
+                        if State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins then reached = true break end
+
+                        local dir = targetPos - hrp.Position
+                        local dist = dir.Magnitude
+                        if dist < 0.5 then
+                            reached = true
+                        else
+                            reusableBodyVel.Velocity = dir.Unit * State.CoinFarmSpeed
+                            if tick() - startTime > (dist / State.CoinFarmSpeed) + 3 then reached = true end
+                        end
+                        task.wait(0)
+                    end
+
+                    if not ScriptActive then break end
+
+                    -- STOP MOVING (Hover using BodyVelocity = zero instead of BodyPosition!)
+                    reusableBodyVel.Velocity = Vector3.zero
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+
+                    local cd = State.PlayersData[LocalPlayer.Name]
+                    local shouldAbort = (not State.CoinFarmEnabled)
+                        or (cd and cd.Dead)
+                        or (State.GameState ~= "Active" and State.GameState ~= "Prep")
+                        or (State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins)
+
+                    if not shouldAbort then
+                        task.wait(0.1)
+
+                        if ScriptActive and coin:IsDescendantOf(Workspace) then
+                            -- FIX: Removed hrp.CFrame = coin.CFrame which was snapping the player UP to the surface
+                            pcall(function() firetouchinterest(hrp, coin, 0) end)
+                            task.wait(0.05)
+                            pcall(function() firetouchinterest(hrp, coin, 1) end)
+                        end
+
+                        if not ScriptActive then break end
+
+                        blacklistedCoins[coin] = true
+                        local bConn
+                        bConn = coin.AncestryChanged:Connect(function()
+                            if not coin:IsDescendantOf(Workspace) then
+                                blacklistedCoins[coin] = nil
+                                if bConn then
+                                    bConn:Disconnect()
+                                    blacklistConns[coin] = nil
+                                end
+                            end
+                        end)
+                        blacklistConns[coin] = bConn
+                        
+                        task.delay(5, function()
+                            if blacklistedCoins[coin] then
+                                blacklistedCoins[coin] = nil
+                                if bConn then
+                                    bConn:Disconnect()
+                                    blacklistConns[coin] = nil
+                                end
+                            end
+                        end)
+
+                        local waited = 0
+                        while ScriptActive and waited < State.CoinFarmCooldown do
+                            local cd2 = State.PlayersData[LocalPlayer.Name]
+                            if cd2 and cd2.Dead then break end
+                            if State.GameState ~= "Active" and State.GameState ~= "Prep" then break end
+                            if not State.CoinFarmEnabled then break end
+                            if State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins then break end
+                            task.wait(0.1)
+                            waited += 0.1
+                        end
+                    end
+                else
+                    -- No coin found! Hover underground!
+                    if not reusableBodyVel or not reusableBodyVel.Parent then
+                        reusableBodyVel = Instance.new("BodyVelocity")
+                        reusableBodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+                        reusableBodyVel.Velocity = Vector3.zero
+                        reusableBodyVel.Parent = hrp
+                    end
+
+                    if State.GameState == "Prep" and State.TeleportTick > 0 then
+                        local elapsed = tick() - State.TeleportTick
+                        if elapsed < 1 then task.wait(1 - elapsed) end
+                    end
+
+                    if hrp.Position.Y > -10 then
+                        lastSafeCFrame = hrp.CFrame
+                    end
+
+                    local hidePos = hrp.Position - Vector3.new(0, 6.5, 0)
+                    hrp.CFrame = CFrame.new(hidePos)
+                    
+                    -- Hover perfectly still underground
+                    reusableBodyVel.Velocity = Vector3.zero
+
+                    while ScriptActive and not GetClosestCoin(hrp) do
+                        local cd = State.PlayersData[LocalPlayer.Name]
+                        if cd and cd.Dead then break end
+                        if State.GameState ~= "Active" and State.GameState ~= "Prep" then break end
+                        if not State.CoinFarmEnabled then break end
+                        task.wait(0.1)
+                    end
                 end
-                wasFarming = false
             end
+        else
+            if noclipActive then setNoclip(false) end
+            if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
+            if hrp then
+                hrp.Anchored = false
+                if wasFarming and State.GameState ~= "Lobby" then
+                    if lastSafeCFrame then
+                        hrp.CFrame = lastSafeCFrame
+                        lastSafeCFrame = nil
+                    else
+                        hrp.CFrame = hrp.CFrame + Vector3.new(0, 7, 0)
+                    end
+                end
+            end
+            wasFarming = false
         end
     end
 end)
 
--- ================= MID-GAME INITIALIZATION SCAN ================= --
+-- ================= MID-GAME INJECTION ================= --
 local initMap = FindMap()
 if initMap then
+    State.MapInstance = initMap
     State.MapName = initMap.Name
     if initMap:FindFirstChild("CoinContainer") then
         State.GameState = "Active"
     elseif initMap:FindFirstChild("CoinAreas") then
         State.GameState = "Prep"
+    end
+    
+    -- Fetch roles immediately on injection so we know who is who, and if WE are in the round!
+    local liveData = FetchCurrentPlayerData()
+    if liveData then
+        ParsePlayerData(liveData)
     end
 end
 
