@@ -1201,7 +1201,8 @@ task.spawn(function()
 
                         if ScriptActive and coin:IsDescendantOf(Workspace) then
                             -- FIX: Removed hrp.CFrame = coin.CFrame which was snapping the player UP to the surface
-                            pcall(function() firetouchinterest(hrp, coin, 0) end)
+                            task.wait(0.15)
+							pcall(function() firetouchinterest(hrp, coin, 0) end)
                             task.wait(0.05)
                             pcall(function() firetouchinterest(hrp, coin, 1) end)
                         end
