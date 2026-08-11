@@ -6,6 +6,7 @@
     Part 4: Murderer Kill All (Dead Guard & Live Role Check)
     Part 5: Anti-AFK System (Randomized) & Mid-Game Injection Fix
     Part 6: Event-Driven Hero Detection (Hang & Race Condition Proof)
+    Part 7: Anti-Fling System
 ]]
 
 local Players = game:GetService("Players")
@@ -54,7 +55,8 @@ local State = {
     TeleportTick = 0,
     AutoKillAllEnabled = false,
     KillAllButtonMode = false,
-    AntiAfkEnabled = false
+    AntiAfkEnabled = false,
+    AntiFlingEnabled = false
 }
 
 local CampCFrame = CFrame.new(0.247963816, -55.1755638, -13.1644669, -0.998459637, -1.18627419e-07, 0.0554830357, -1.20305785e-08, 1, -2.69099534e-08, -0.0554830357, -3.35434329e-08, -0.998459637)
@@ -71,6 +73,11 @@ local antiAfkConn = nil
 local lastSafeCFrame = nil
 local blacklistConns = {}
 
+-- Anti-Fling Variables
+local antiFlingConns = {}
+local antiFlingGlobalConns = {}
+local antiFlingActive = false
+
 if CoreGui:FindFirstChild("MM2CustomMenu") then
     CoreGui.MM2CustomMenu:Destroy()
 end
@@ -80,6 +87,10 @@ table.insert(connections, Players.PlayerRemoving:Connect(function(player)
     if espObjects[player] then
         espObjects[player]:Destroy()
         espObjects[player] = nil
+    end
+    if antiFlingConns[player.UserId] then
+        antiFlingConns[player.UserId]:Disconnect()
+        antiFlingConns[player.UserId] = nil
     end
 end))
 
@@ -118,6 +129,73 @@ local function FetchCurrentPlayerData()
     end
     
     return result
+end
+
+-- ================= ANTI-FLING LOGIC ================= --
+local function zeroRootPart(root)
+    if root and root.Parent then
+        root.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+        root.Velocity = Vector3.new(0, 0, 0)
+        root.RotVelocity = Vector3.new(0, 0, 0)
+        root.CanCollide = false
+    end
+end
+
+local function hookPlayer(player)
+    if player == LocalPlayer or not antiFlingActive then return end
+
+    if antiFlingConns[player.UserId] then
+        antiFlingConns[player.UserId]:Disconnect()
+        antiFlingConns[player.UserId] = nil
+    end
+
+    local function onCharAdded(char)
+        if not antiFlingActive then return end
+        local root = char:WaitForChild("HumanoidRootPart", 5)
+        local humanoid = char:WaitForChild("Humanoid", 5)
+        if not root or not humanoid then return end
+
+        antiFlingConns[player.UserId] = RunService.Heartbeat:Connect(function()
+            if root and root.Parent then
+                zeroRootPart(root)
+            end
+        end)
+
+        humanoid.Died:Connect(function()
+            if antiFlingConns[player.UserId] then
+                antiFlingConns[player.UserId]:Disconnect()
+                antiFlingConns[player.UserId] = nil
+            end
+        end)
+    end
+
+    if player.Character then
+        task.spawn(onCharAdded, player.Character)
+    end
+    player.CharacterAdded:Connect(onCharAdded)
+end
+
+local function StartAntiFling()
+    if antiFlingActive then return end
+    antiFlingActive = true
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        hookPlayer(player)
+    end
+
+    antiFlingGlobalConns.PlayerAdded = Players.PlayerAdded:Connect(hookPlayer)
+end
+
+local function StopAntiFling()
+    antiFlingActive = false
+    for userId, conn in pairs(antiFlingConns) do
+        conn:Disconnect()
+        antiFlingConns[userId] = nil
+    end
+    for key, conn in pairs(antiFlingGlobalConns) do
+        conn:Disconnect()
+        antiFlingGlobalConns[key] = nil
+    end
 end
 
 -- ================= KILL ALL LOGIC ================= --
@@ -435,6 +513,9 @@ local function CloseScript()
         antiAfkConn:Disconnect()
         antiAfkConn = nil
     end
+
+    -- Clean up Anti-Fling
+    StopAntiFling()
 
     local c = LocalPlayer.Character
     if c and c:FindFirstChild("HumanoidRootPart") then
@@ -772,6 +853,34 @@ KillBtnBox.MouseButton1Click:Connect(function()
     KillBtnBox.BackgroundColor3 = State.KillAllButtonMode and Color3.fromRGB(150, 40, 40) or Color3.fromRGB(35, 35, 35)
     KillBtnBox.Text = State.KillAllButtonMode and "X" or ""
     KillCube.Visible = State.KillAllButtonMode
+end)
+
+-- ================= FLING PAGE ================= --
+local FlingPage = CreatePage("Fling")
+CreateTabButton("Fling", "Fling")
+
+local AntiFlingBtn = Instance.new("TextButton")
+AntiFlingBtn.Size = UDim2.new(1, -20, 0, 40)
+AntiFlingBtn.Position = UDim2.new(0, 10, 0, 10)
+AntiFlingBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+AntiFlingBtn.Text = "Anti-Fling: OFF"
+AntiFlingBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AntiFlingBtn.Font = Enum.Font.GothamBold
+AntiFlingBtn.TextSize = 14
+AntiFlingBtn.Parent = FlingPage
+
+Instance.new("UICorner", AntiFlingBtn).CornerRadius = UDim.new(0, 6)
+
+AntiFlingBtn.MouseButton1Click:Connect(function()
+    State.AntiFlingEnabled = not State.AntiFlingEnabled
+    AntiFlingBtn.Text = "Anti-Fling: " .. (State.AntiFlingEnabled and "ON" or "OFF")
+    AntiFlingBtn.BackgroundColor3 = State.AntiFlingEnabled and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(35, 35, 35)
+
+    if State.AntiFlingEnabled then
+        StartAntiFling()
+    else
+        StopAntiFling()
+    end
 end)
 
 
@@ -1201,8 +1310,7 @@ task.spawn(function()
 
                         if ScriptActive and coin:IsDescendantOf(Workspace) then
                             -- FIX: Removed hrp.CFrame = coin.CFrame which was snapping the player UP to the surface
-                            task.wait(0.15)
-							pcall(function() firetouchinterest(hrp, coin, 0) end)
+                            pcall(function() firetouchinterest(hrp, coin, 0) end)
                             task.wait(0.05)
                             pcall(function() firetouchinterest(hrp, coin, 1) end)
                         end
