@@ -501,6 +501,81 @@ local function DestroyKillCircle()
     if KillCircleGui then KillCircleGui:Destroy() KillCircleGui = nil end
 end
 
+-- ================= ANTI KICK ================= --
+local hooksActive = false
+
+local function initAntiKick()
+    local gc  = getfenv().getgc          or getgc
+    local hk  = getfenv().hookfunction   or hookfunction
+    local nc  = getfenv().newcclosure    or function(f) return f end
+    local hm  = getfenv().hookmetamethod or hookmetamethod
+    local nm  = getfenv().getnamecallmethod or getnamecallmethod
+
+    local player = game:GetService("Players").LocalPlayer
+    local cache  = {}
+
+    local function isUUID(r)
+        if cache[r] then return true end
+        local n = r.Name
+        if #n == 36 and string.match(n, "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
+            cache[r] = true
+            return true
+        end
+        return false
+    end
+
+    local feHook
+    feHook = hk(Instance.new("RemoteEvent").FireServer, function(self, ...)
+        if isUUID(self) then return feHook(self, ...) end
+        for _, v in ipairs({...}) do
+            if type(v) == "string" and string.find(string.lower(v), "kick") then return end
+        end
+        return feHook(self, ...)
+    end)
+
+    local nmHook
+    nmHook = hm(game, "__namecall", nc(function(self, ...)
+        local method = nm()
+        if self == player and (method == "Kick" or method == "kick" or method == "Destroy" or method == "destroy") then return end
+        return nmHook(self, ...)
+    end))
+
+    local kickHook
+    kickHook = hk(player.Kick, nc(function(self, ...)
+        if not checkcaller() and self == player then return end
+        return kickHook(self, ...)
+    end))
+
+    local destHook
+    destHook = hk(player.Destroy, nc(function(self, ...)
+        if not checkcaller() and self == player then return end
+        return destHook(self, ...)
+    end))
+
+    pcall(function()
+        for _, v in pairs(gc(true)) do
+            if type(v) == "table" then
+                pcall(function()
+                    if rawget(v, "Send") and type(rawget(v, "Send")) == "function" and rawget(v, "Get") and rawget(v, "Encrypt") then
+                        local sHook
+                        sHook = hk(v.Send, nc(function(cmd, ...)
+                            if type(cmd) == "string" then
+                                local c = string.lower(cmd)
+                                if c == "detected" or c == "logerror" then return end
+                            end
+                            return sHook(cmd, ...)
+                        end))
+                    end
+                    if rawget(v, "Kill") and type(rawget(v, "Kill")) == "function" and rawget(v, "Disconnect") then
+                        hk(v.Kill, nc(function(...) return end))
+                        hk(v.Disconnect, nc(function(...) return end))
+                    end
+                end)
+            end
+        end
+    end)
+end
+
 -- ================= COIN FARM ================= --
 local function GetClosestCoin(hrp)
     local map = State.MapInstance or FindMap()
@@ -533,7 +608,7 @@ end
 local Window = WindUI:CreateWindow({
     Title = "MM2 Dashboard",
     Icon = "swords",
-    Author = "by AI & User",
+    Author = "AMARAH",
     Folder = "MM2Dashboard",
     Theme = "Dark",
     Transparent = true,
@@ -557,19 +632,23 @@ local KillTab  = Window:Tab({ Title = "Kill",      Icon = "sword" })
 local FlingTab = Window:Tab({ Title = "Fling",     Icon = "zap" })
 
 -- ================= MAIN TAB ================= --
-local MapLabel        = MainTab:Paragraph({ Title = "Map",     Content = "None" })
-local StateLabel      = MainTab:Paragraph({ Title = "State",   Content = "Lobby" })
-local CoinLabel       = MainTab:Paragraph({ Title = "Coins",   Content = "0 / 0" })
-local PlayerListLabel = MainTab:Paragraph({ Title = "Players", Content = "--- Waiting for next round ---" })
-
+local MapLabel        = MainTab:Paragraph({ Title = "Map",     Desc = "None" })
+local StateLabel      = MainTab:Paragraph({ Title = "State",   Desc = "Lobby" })
+local CoinLabel       = MainTab:Paragraph({ Title = "Coins",   Desc = "0 / 0" })
+local PlayerListLabel = MainTab:Paragraph({ Title = "Players", Desc = "--- Waiting for next round ---" })
 local function UpdateDashboard()
-    MapLabel:Set({ Content = State.MapName })
+    MapLabel:SetDesc(State.MapName)
+    
     local stateText = State.GameState
-    if State.GameState == "Prep" and State.TeleportedToMap then stateText = "Prep (On Map)" end
-    StateLabel:Set({ Content = stateText })
-    CoinLabel:Set({ Content = State.LocalCoins .. " / " .. State.MaxCoins })
+    if State.GameState == "Prep" and State.TeleportedToMap then
+        stateText = "Prep (On Map)"
+    end
+    StateLabel:SetDesc(stateText)
+    
+    CoinLabel:SetDesc(State.LocalCoins .. " / " .. State.MaxCoins)
+    
     if State.GameState == "Lobby" then
-        PlayerListLabel:Set({ Content = "--- Waiting for next round ---" })
+        PlayerListLabel:SetDesc("--- Waiting for next round ---")
     else
         local listText = ""
         for name, data in pairs(State.PlayersData) do
@@ -577,43 +656,85 @@ local function UpdateDashboard()
             local status = data.Dead and " (Dead)" or ""
             listText = listText .. name .. " - " .. role .. status .. "\n"
         end
-        PlayerListLabel:Set({ Content = listText ~= "" and listText or "--- No Players Found ---" })
+        PlayerListLabel:SetDesc(listText ~= "" and listText or "--- No Players Found ---")
     end
 end
-
 -- ================= CLOSE SCRIPT ================= --
 local function CloseScript()
     if not ScriptActive then return end
     ScriptActive = false
 
-    FlingActive = false
+    -- kill all active state flags first so every loop exits cleanly
+    FlingActive               = false
+    State.CoinFarmEnabled     = false
+    State.AutoKillAllEnabled  = false
+    State.KillAllButtonMode   = false
+    State.ESPEnabled          = false
+    State.AntiAfkEnabled      = false
+    State.AntiFlingEnabled    = false
+
+    -- stop systems that have their own cleanup
+    StopFling()
     StopAntiFling()
     setNoclip(false)
+
+    -- anti-afk
     if antiAfkConn then antiAfkConn:Disconnect() antiAfkConn = nil end
+
+    -- noclip safety (already handled by setNoclip but belt-and-suspenders)
     if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
+
+    -- all tracked connections
     for _, conn in ipairs(connections) do
         if conn and conn.Disconnect then conn:Disconnect() end
     end
+
+    -- coin blacklist connections
     for _, bConn in pairs(blacklistConns) do
         if bConn then bConn:Disconnect() end
     end
     blacklistConns = {}
 
+    -- ESP: set flag false first so render loop stops rebuilding, then clear
     ClearESP()
 
+    -- body velocity cleanup
+    if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
+
+    -- character restore
     local c = LocalPlayer.Character
-    if c and c:FindFirstChild("HumanoidRootPart") then
-        c.HumanoidRootPart.Anchored = false
-        if (State.CoinFarmEnabled or wasFarming) and State.GameState ~= "Lobby" then
-            if lastSafeCFrame then
-                c.HumanoidRootPart.CFrame = lastSafeCFrame
-            else
-                c.HumanoidRootPart.CFrame = c.HumanoidRootPart.CFrame + Vector3.new(0, 7, 0)
+    if c then
+        local hrp = c:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.Anchored = false
+            if (wasFarming) and State.GameState ~= "Lobby" then
+                if lastSafeCFrame then
+                    hrp.CFrame = lastSafeCFrame
+                else
+                    hrp.CFrame = hrp.CFrame + Vector3.new(0, 7, 0)
+                end
             end
         end
+
+        -- restore collision on all parts (noclip or anti-fling may have disabled it)
+        for _, part in ipairs(c:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = savedCollisions[part] ~= nil and savedCollisions[part] or true
+            end
+        end
+        savedCollisions = {}
+
+        -- restore humanoid ragdoll state (anti-fling disables it)
+        local humanoid = c:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+        end
     end
+
     wasFarming = false
 
+    -- UI cleanup
     DestroyKillCircle()
     Window:Destroy()
 end
@@ -703,6 +824,21 @@ FlingTab:Button({ Title = "Refresh List", Icon = "refresh-cw", Callback = functi
 end})
 FlingTab:Button({ Title = "Start Fling",  Icon = "zap",        Callback = function() StartFling() end })
 FlingTab:Button({ Title = "Stop Fling",   Icon = "square",     Callback = function() StopFling() end })
+
+-- ================= UTILITY TAB UI ================= --
+local UtilityTab = Window:Tab({ Title = "Utility", Icon = "shield" })
+
+UtilityTab:Toggle({
+    Title    = "Anti Kick",
+    Icon     = "shield-check",
+    Value    = false,
+    Callback = function(val)
+        if val and not hooksActive then
+            initAntiKick()
+            hooksActive = true
+        end
+    end
+})
 
 -- ================= REMOTE CONNECTIONS ================= --
 table.insert(connections, Players.PlayerAdded:Connect(function()
