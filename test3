@@ -1,4 +1,4 @@
---[[    MM2 Custom Menu (WindUI Version)    ]]--
+--[[    MM2 Custom Menu (WindUI Version) + SupremeValues Checker    ]]--
 
 -- ================= SERVICES ================= --
 local Players = game:GetService("Players")
@@ -27,6 +27,10 @@ local CoinCollectedEvent = GameplayRemotes:WaitForChild("CoinCollected")
 local Clear1v1Event = CustomGamesRemotes:WaitForChild("Clear1v1")
 local TeleportToPartEvent = GameplayRemotes:WaitForChild("TeleportToPart")
 local GetCurrentPlayerDataFunc = GameplayRemotes:FindFirstChild("GetCurrentPlayerData")
+
+-- Value Checker Remote
+local ExtrasRemotes = Remotes:FindFirstChild("Extras")
+local GetFullInventory = ExtrasRemotes and ExtrasRemotes:FindFirstChild("GetFullInventory")
 
 -- ================= STATE ================= --
 local State = {
@@ -71,13 +75,10 @@ local KillCircleGui = nil
 local SelectedFlingTargets = {}
 local FlingActive = false
 
-local antiFlingConns = {}
-local antiFlingRespawnConn = nil
+-- ================= ANTI-FLING VARIABLES ================= --
 local antiFlingActive = false
-local antiFlingLastSafePos = nil
-local VELOCITY_THRESHOLD = 50
-local VOID_MIN_Y = -100
-local VOID_MAX_Y = 400
+local antiFlingConns = {}
+local activeLoops = {} -- keyed by HRP instance
 
 local ROLE_COLORS = {
     Murderer = Color3.fromRGB(255, 50, 50),
@@ -87,6 +88,204 @@ local ROLE_COLORS = {
 }
 
 local blacklistedCoins = {}
+
+-- ============================================================
+-- CORE: VALUE CHECKER DATA & MATCHING SYSTEM
+-- ============================================================
+
+-- PASTE YOUR SCRAPED SV_DATA HERE
+loadstring(game:HttpGet("https://raw.githubusercontent.com/bluudito/coinfarm/refs/heads/main/svdata"))()
+
+local RARITY_COLORS = {
+    Ancient   = Color3.fromRGB(128, 0, 255),
+    Vintage   = Color3.fromRGB(255, 215, 0),
+    Chroma    = Color3.fromRGB(255, 0, 255),
+    Godly     = Color3.fromRGB(255, 105, 180),
+    Legendary = Color3.fromRGB(220, 50, 50),
+    Rare      = Color3.fromRGB(50, 200, 50),
+    Uncommon  = Color3.fromRGB(50, 100, 255),
+    Common    = Color3.fromRGB(100, 100, 100),
+    Unique    = Color3.fromRGB(255, 165, 0),
+    Pet       = Color3.fromRGB(255, 200, 0),
+    Unknown   = Color3.fromRGB(60, 60, 60),
+}
+
+local function getRarityColor(rarity)
+    if type(rarity) ~= "string" then return RARITY_COLORS["Unknown"] end
+    return RARITY_COLORS[rarity] or RARITY_COLORS["Unknown"]
+end
+
+local weaponKeyMap = {}
+local petKeyMap    = {}
+
+local function buildLookupMaps()
+    local db = ReplicatedStorage:FindFirstChild("Database")
+    local sync = db and db:FindFirstChild("Sync")
+    if not sync then return end
+    local ok, data = pcall(require, sync)
+    if not ok or type(data) ~= "table" then return end
+
+    local weaponData = data.Weapons or data.Item
+    if weaponData then
+        for gameId, item in pairs(weaponData) do
+            if type(item) == "table" then
+                weaponKeyMap[gameId] = {
+                    name   = tostring(item.ItemName or item.Name or ""),
+                    itype  = tostring(item.ItemType or item.Type or "Unknown"),
+                    rarity = tostring(item.Rarity or "Unknown"),
+                    year   = tostring(item.Year or ""),
+                    chroma = item.Chroma == true
+                }
+            end
+        end
+    end
+
+    if data.Pets then
+        for gameId, pet in pairs(data.Pets) do
+            if type(pet) == "table" then
+                petKeyMap[gameId] = {
+                    name   = tostring(pet.Name or ""),
+                    itype  = "Pet",
+                    rarity = tostring(pet.Rarity or "Unknown"),
+                    year   = tostring(pet.Year or ""),
+                    chroma = pet.Chroma == true
+                }
+            end
+        end
+    end
+end
+
+buildLookupMaps()
+
+local function getSupremeValue(itemName, itemType, itemRarity, itemYear, isChroma)
+    if not itemName or itemName == "" then return nil end
+    
+    itemName = string.lower(itemName)
+    itemType = string.lower(itemType or "Unknown")
+    itemRarity = string.lower(itemRarity or "Unknown")
+    itemYear = (itemYear == "None" or itemYear == nil) and "" or tostring(itemYear)
+    
+    local targetRarity = isChroma and "chroma" or itemRarity
+    local matches = {}
+    
+    -- STEP 1: Filter by Name
+    for _, item in ipairs(SV_DATA) do
+        if string.lower(item.name) == itemName then
+            table.insert(matches, item)
+        end
+    end
+    
+    if #matches == 0 then return nil end
+    if #matches == 1 then return matches[1].value end
+    
+    -- STEP 2: Filter by Rarity
+    local rarityMatches = {}
+    for _, item in ipairs(matches) do
+        if string.lower(item.rarity) == targetRarity then
+            table.insert(rarityMatches, item)
+        end
+    end
+    if #rarityMatches > 0 then matches = rarityMatches end
+    if #matches == 1 then return matches[1].value end
+    
+    -- STEP 3: Filter by Type
+    local typeMatches = {}
+    for _, item in ipairs(matches) do
+        if string.lower(item.type) == itemType then
+            table.insert(typeMatches, item)
+        end
+    end
+    if #typeMatches > 0 then matches = typeMatches end
+    if #matches == 1 then return matches[1].value end
+    
+    -- STEP 4: Filter by Year
+    local yearMatches = {}
+    for _, item in ipairs(matches) do
+        if item.year == itemYear then
+            table.insert(yearMatches, item)
+        end
+    end
+    if #yearMatches > 0 then matches = yearMatches end
+    
+    return matches[1].value
+end
+
+local function buildItemList(data)
+    local items = {}
+    local totalNumeric = 0
+
+    local function processCategory(categoryTable, isPet)
+        if type(categoryTable) ~= "table" then return end
+        local owned = categoryTable.Owned or categoryTable
+        
+        for id, qty in pairs(owned) do
+            local gameData = isPet and petKeyMap[id] or weaponKeyMap[id]
+            if gameData then
+                local val = getSupremeValue(gameData.name, gameData.itype, gameData.rarity, gameData.year, gameData.chroma)
+                
+                local displayQty = (type(qty) == "number") and qty or 1
+                local displayVal = val
+                
+                if type(val) == "string" then
+                    -- Keep string as is for display
+                elseif type(val) == "number" then
+                    totalNumeric = totalNumeric + (val * displayQty)
+                end
+                
+                table.insert(items, { 
+                    name = gameData.name, 
+                    value = displayVal, 
+                    rarity = gameData.rarity, 
+                    itype = gameData.itype, 
+                    chroma = gameData.chroma,
+                    qty = displayQty 
+                })
+            else
+                table.insert(items, { 
+                    name = tostring(id), 
+                    value = nil, 
+                    rarity = "Unknown", 
+                    itype = isPet and "Pet" or "Unknown", 
+                    chroma = false,
+                    qty = (type(qty) == "number") and qty or 1 
+                })
+            end
+        end
+    end
+
+    if type(data) == "table" then
+        processCategory(data.Weapons, false)
+        processCategory(data.Pets, true)
+    end
+
+    table.sort(items, function(a, b)
+        local av = (type(a.value) == "number") and (a.value * a.qty) or -1
+        local bv = (type(b.value) == "number") and (b.value * b.qty) or -1
+        return av > bv
+    end)
+
+    return items, totalNumeric
+end
+
+local function fmtVal(n)
+    if not n then return "N/A" end
+    if type(n) ~= "number" then return tostring(n) end
+    if n >= 1000000 then 
+        return string.format("%.1fM", n/1000000)
+    elseif n >= 1000 then 
+        return string.format("%.1fK", n/1000)
+    else 
+        return tostring(math.floor(n)) 
+    end
+end
+
+local function fetchInv(playerObj)
+    if not GetFullInventory then return nil end
+    local ok, data = pcall(function() 
+        return GetFullInventory:InvokeServer(playerObj) 
+    end)
+    return (ok and type(data) == "table") and data or nil
+end
 
 -- ================= HELPER FUNCTIONS ================= --
 local function Notify(title, text, duration)
@@ -128,7 +327,6 @@ local function FindMap()
     return nil
 end
 
--- Live List of Players for Dropdowns
 local function GetPlayerList()
     local names = {}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -179,57 +377,28 @@ local function ClearESP()
 end
 
 -- ================= ANTI-FLING ================= --
-local function AntiFlingSetup()
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:WaitForChild("HumanoidRootPart", 5)
-    local humanoid = char:WaitForChild("Humanoid", 5)
-    if not root or not humanoid then return end
-
-    antiFlingLastSafePos = root.CFrame
-    humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-
-    antiFlingConns.limbs = RunService.Heartbeat:Connect(function()
-        if char and char.Parent then
-            for _, part in ipairs(char:GetChildren()) do
-                if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                    part.CanCollide = false
-                end
-            end
+local function clampHRP(hrp)
+    if activeLoops[hrp] then return end
+    activeLoops[hrp] = RunService.Heartbeat:Connect(function()
+        if not hrp or not hrp.Parent then
+            activeLoops[hrp]:Disconnect()
+            activeLoops[hrp] = nil
+            return
         end
-    end)
-    antiFlingConns.position = RunService.Heartbeat:Connect(function()
-        if root and root.Parent then
-            if root.AssemblyLinearVelocity.Magnitude < VELOCITY_THRESHOLD and root.AssemblyAngularVelocity.Magnitude < VELOCITY_THRESHOLD then
-                antiFlingLastSafePos = root.CFrame
-            end
-        end
-    end)
-    antiFlingConns.void = RunService.Heartbeat:Connect(function()
-        if root and root.Parent then
-            local y = root.Position.Y
-            if y < VOID_MIN_Y or y > VOID_MAX_Y then root.CFrame = antiFlingLastSafePos end
-        end
-    end)
-    antiFlingConns.velocity = RunService.Stepped:Connect(function()
-        if root and root.Parent then
-            if root.AssemblyLinearVelocity.Magnitude > VELOCITY_THRESHOLD then root.AssemblyLinearVelocity = Vector3.zero end
-            if root.AssemblyAngularVelocity.Magnitude > VELOCITY_THRESHOLD then root.AssemblyAngularVelocity = Vector3.zero end
-        end
+        hrp.CustomPhysicalProperties = PhysicalProperties.new(0, 0, 0, 0, 0)
+        hrp.AssemblyLinearVelocity  = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.CanCollide = false
     end)
 end
 
-local function AntiFlingCleanup()
-    for key, conn in pairs(antiFlingConns) do
-        if conn then conn:Disconnect() end
-        antiFlingConns[key] = nil
-    end
-    local char = LocalPlayer.Character
-    if char then
-        local humanoid = char:FindFirstChild("Humanoid")
-        if humanoid then humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true) end
-        for _, part in ipairs(char:GetChildren()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then part.CanCollide = true end
+local function scanAndClamp()
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") and v.Name == "HumanoidRootPart" then
+            local plr = Players:GetPlayerFromCharacter(v.Parent)
+            if plr and plr ~= LocalPlayer then
+                clampHRP(v)
+            end
         end
     end
 end
@@ -237,18 +406,39 @@ end
 local function StartAntiFling()
     if antiFlingActive then return end
     antiFlingActive = true
-    AntiFlingSetup()
-    antiFlingRespawnConn = LocalPlayer.CharacterAdded:Connect(function()
-        AntiFlingCleanup()
-        task.wait(0.1)
-        if antiFlingActive then AntiFlingSetup() end
+    scanAndClamp()
+
+    antiFlingConns.DescendantAdded = workspace.DescendantAdded:Connect(function(part)
+        if part:IsA("BasePart") and part.Name == "HumanoidRootPart" then
+            local plr = Players:GetPlayerFromCharacter(part.Parent)
+            if plr and plr ~= LocalPlayer then
+                task.wait(0.5)
+                if antiFlingActive then
+                    clampHRP(part)
+                end
+            end
+        end
+    end)
+
+    antiFlingConns.DescendantRemoving = workspace.DescendantRemoving:Connect(function(part)
+        if activeLoops[part] then
+            activeLoops[part]:Disconnect()
+            activeLoops[part] = nil
+        end
     end)
 end
 
 local function StopAntiFling()
     antiFlingActive = false
-    AntiFlingCleanup()
-    if antiFlingRespawnConn then antiFlingRespawnConn:Disconnect() antiFlingRespawnConn = nil end
+    for _, conn in pairs(antiFlingConns) do
+        if conn then conn:Disconnect() end
+    end
+    antiFlingConns = {}
+
+    for hrp, loop in pairs(activeLoops) do
+        if loop then loop:Disconnect() end
+    end
+    activeLoops = {}
 end
 
 -- ================= FLING ================= --
@@ -604,7 +794,10 @@ local function GetClosestCoin(hrp)
     return closestCoin
 end
 
--- ================= WINDUI WINDOW ================= --
+-- ============================================================
+-- UI: WINDUI WINDOW & TABS
+-- ============================================================
+
 local Window = WindUI:CreateWindow({
     Title = "MM2 Dashboard",
     Icon = "swords",
@@ -617,7 +810,7 @@ local Window = WindUI:CreateWindow({
 })
 
 Window:EditOpenButton({
-    Title = "MM2 Dashboard",
+    Title = "",
     Icon = "swords",
     Enabled = true,
     Draggable = true,
@@ -626,6 +819,7 @@ Window:EditOpenButton({
 
 -- ================= TABS ================= --
 local MainTab  = Window:Tab({ Title = "Main",      Icon = "layout-dashboard" })
+local ValueTab = Window:Tab({ Title = "Value",     Icon = "gem" })
 local ESPTab   = Window:Tab({ Title = "ESP",       Icon = "eye" })
 local FarmTab  = Window:Tab({ Title = "Coin Farm", Icon = "coins" })
 local KillTab  = Window:Tab({ Title = "Kill",      Icon = "sword" })
@@ -659,12 +853,145 @@ local function UpdateDashboard()
         PlayerListLabel:SetDesc(listText ~= "" and listText or "--- No Players Found ---")
     end
 end
+
+-- ================= VALUE TAB (HStack & VStack) ================= --
+local ValueRow = ValueTab:HStack({ Title = "Inventory Checker" })
+
+local LeftCol = ValueRow:VStack({ Title = "Server Players" })
+local RightCol = ValueRow:VStack({ Title = "Inventory View" })
+
+local InvHeaderPara = RightCol:Paragraph({ Title = "Inventory", Desc = "Select a player to view their inventory" })
+local TotalPara = RightCol:Paragraph({ Title = "Total Value", Desc = "—" })
+RightCol:Divider()
+
+local InvElements = {}
+local PlayerBtns = {}
+local PlayerDataCache = {}
+
+local function clearInventoryUI()
+    for _, el in ipairs(InvElements) do
+        if el and el.Destroy then pcall(function() el:Destroy() end) end
+    end
+    InvElements = {}
+end
+
+local function applyRarityColor(el, rarity)
+    if not el then return end
+    local rarityColor = getRarityColor(rarity)
+    pcall(function()
+        if typeof(el) == "Instance" then
+            el.BackgroundColor3 = rarityColor
+            el.BackgroundTransparency = 0.8
+            for _, child in ipairs(el:GetDescendants()) do
+                if child:IsA("ImageLabel") and child.Image ~= "" then
+                    child.ImageColor3 = rarityColor
+                    child.ImageTransparency = 0.8
+                elseif child:IsA("Frame") then
+                    child.BackgroundColor3 = rarityColor
+                    child.BackgroundTransparency = 0.8
+                end
+            end
+        end
+    end)
+end
+
+local function populateInventoryUI(pName, data)
+    clearInventoryUI()
+    if InvHeaderPara then InvHeaderPara:SetTitle(pName .. "'s Inventory") end
+
+    local items, total = buildItemList(data)
+    if TotalPara then
+        TotalPara:SetTitle("Total Value  —  " .. fmtVal(total))
+        TotalPara:SetDesc("Numeric items only. Relative-value items shown below.")
+    end
+
+    if #items == 0 then
+        local el = RightCol:Paragraph({ Title = "No Items Found", Desc = "This player has no items." })
+        table.insert(InvElements, el)
+        return
+    end
+
+    for _, item in ipairs(items) do
+        local valStr = "(N/A)"
+        if item.value ~= nil then
+            if type(item.value) == "number" then
+                valStr = "Value: " .. tostring(item.value)
+            else
+                valStr = "Value: " .. tostring(item.value)
+            end
+        end
+
+        local typeTag = " [" .. item.itype .. "]"
+        if item.chroma then typeTag = " [Chroma" .. (item.itype ~= "Unknown" and " " .. item.itype or "") .. "]" end
+        
+        local titleStr = string.format("[%dx] %s%s", item.qty, item.name, typeTag)
+        local descStr = item.rarity .. "   |   " .. valStr
+        
+        if type(item.value) == "number" and item.qty > 1 then
+            descStr = descStr .. "   |   Total: " .. fmtVal(item.value * item.qty)
+        end
+
+        local el = RightCol:Paragraph({ Title = titleStr, Desc = descStr })
+        applyRarityColor(el, item.rarity)
+        table.insert(InvElements, el)
+    end
+end
+
+local function clearPlayerBtns()
+    for _, b in ipairs(PlayerBtns) do
+        if b and b.Destroy then pcall(function() b:Destroy() end) end
+    end
+    PlayerBtns = {}
+end
+
+local function refreshPlayers()
+    clearPlayerBtns()
+    local allPlayers = Players:GetPlayers()
+
+    if #allPlayers == 0 then
+        local b = LeftCol:Paragraph({ Title = "No players found", Desc = "Waiting..." })
+        table.insert(PlayerBtns, b)
+        return
+    end
+
+    for _, p in ipairs(allPlayers) do
+        local pName = p.Name
+        local btn = LeftCol:Button({
+            Title    = pName,
+            Desc     = "Loading...",
+            Callback = function()
+                local data = PlayerDataCache[pName]
+                if not data then 
+                    data = fetchInv(p)
+                    PlayerDataCache[pName] = data
+                end
+                if data then
+                    populateInventoryUI(pName, data)
+                else
+                    Notify("Error", "Could not load " .. pName .. "'s inventory.", 3)
+                end
+            end,
+        })
+        table.insert(PlayerBtns, btn)
+
+        task.spawn(function()
+            local data = fetchInv(p)
+            PlayerDataCache[pName] = data
+            if data then
+                local _, total = buildItemList(data)
+                pcall(function() btn:SetDesc("Value: " .. fmtVal(total)) end)
+            else
+                pcall(function() btn:SetDesc("Value: N/A") end)
+            end
+        end)
+    end
+end
+
 -- ================= CLOSE SCRIPT ================= --
 local function CloseScript()
     if not ScriptActive then return end
     ScriptActive = false
 
-    -- kill all active state flags first so every loop exits cleanly
     FlingActive               = false
     State.CoinFarmEnabled     = false
     State.AutoKillAllEnabled  = false
@@ -673,35 +1000,26 @@ local function CloseScript()
     State.AntiAfkEnabled      = false
     State.AntiFlingEnabled    = false
 
-    -- stop systems that have their own cleanup
     StopFling()
     StopAntiFling()
     setNoclip(false)
 
-    -- anti-afk
     if antiAfkConn then antiAfkConn:Disconnect() antiAfkConn = nil end
-
-    -- noclip safety (already handled by setNoclip but belt-and-suspenders)
     if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
 
-    -- all tracked connections
     for _, conn in ipairs(connections) do
         if conn and conn.Disconnect then conn:Disconnect() end
     end
 
-    -- coin blacklist connections
     for _, bConn in pairs(blacklistConns) do
         if bConn then bConn:Disconnect() end
     end
     blacklistConns = {}
 
-    -- ESP: set flag false first so render loop stops rebuilding, then clear
     ClearESP()
 
-    -- body velocity cleanup
     if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
 
-    -- character restore
     local c = LocalPlayer.Character
     if c then
         local hrp = c:FindFirstChild("HumanoidRootPart")
@@ -716,7 +1034,6 @@ local function CloseScript()
             end
         end
 
-        -- restore collision on all parts (noclip or anti-fling may have disabled it)
         for _, part in ipairs(c:GetDescendants()) do
             if part:IsA("BasePart") then
                 part.CanCollide = savedCollisions[part] ~= nil and savedCollisions[part] or true
@@ -724,7 +1041,6 @@ local function CloseScript()
         end
         savedCollisions = {}
 
-        -- restore humanoid ragdoll state (anti-fling disables it)
         local humanoid = c:FindFirstChildOfClass("Humanoid")
         if humanoid then
             humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
@@ -733,8 +1049,6 @@ local function CloseScript()
     end
 
     wasFarming = false
-
-    -- UI cleanup
     DestroyKillCircle()
     Window:Destroy()
 end
@@ -846,14 +1160,19 @@ table.insert(connections, Players.PlayerAdded:Connect(function()
     if FlingDropdown then
         FlingDropdown:Refresh(GetPlayerList(), true)
     end
+    task.wait(6)
+    refreshPlayers()
 end))
 
 table.insert(connections, Players.PlayerRemoving:Connect(function(player)
     if espObjects[player] then espObjects[player]:Destroy() espObjects[player] = nil end
     SelectedFlingTargets[player.Name] = nil
+    PlayerDataCache[player.Name] = nil
     if FlingDropdown then
         FlingDropdown:Refresh(GetPlayerList(), true)
     end
+    task.wait(0.5)
+    refreshPlayers()
 end))
 
 table.insert(connections, FadeEvent.OnClientEvent:Connect(function(data)
@@ -1192,6 +1511,15 @@ task.spawn(function()
     end
 end)
 
+-- ================= VALUE CHECKER AUTO-REFRESH LOOP ================= --
+task.spawn(function()
+    while ScriptActive do
+        task.wait(10)
+        if not ScriptActive then break end
+        refreshPlayers()
+    end
+end)
+
 -- ================= MID-GAME INJECTION ================= --
 local initMap = FindMap()
 if initMap then
@@ -1204,3 +1532,4 @@ if initMap then
 end
 
 UpdateDashboard()
+refreshPlayers()
