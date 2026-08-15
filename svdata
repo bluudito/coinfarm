@@ -942,3 +942,4 @@ local SV_DATA = {
     {name="Candies (2016)", type="Misc", rarity="Misc", year="2016", value="x2 T1 Commons"},
     {name="Candies (2017)", type="Misc", rarity="Misc", year="2017", value="x1 T1 Common"},
 }
+return SV_DATA
