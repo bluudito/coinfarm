@@ -96,24 +96,35 @@ local blacklistedCoins = {}
 -- PASTE YOUR SCRAPED SV_DATA HERE
 local SV_DATA = loadstring(game:HttpGet("https://raw.githubusercontent.com/bluudito/coinfarm/refs/heads/main/svdata"))()
 
+-- ============================================================
+-- CORE: RARITY COLORS
+-- ============================================================
 local RARITY_COLORS = {
-    Ancient   = Color3.fromRGB(128, 0, 255),
-    Vintage   = Color3.fromRGB(255, 215, 0),
-    Chroma    = Color3.fromRGB(255, 0, 255),
-    Godly     = Color3.fromRGB(255, 105, 180),
-    Legendary = Color3.fromRGB(220, 50, 50),
-    Rare      = Color3.fromRGB(50, 200, 50),
-    Uncommon  = Color3.fromRGB(50, 100, 255),
-    Common    = Color3.fromRGB(100, 100, 100),
-    Unique    = Color3.fromRGB(255, 165, 0),
-    Pet       = Color3.fromRGB(255, 200, 0),
-    Unknown   = Color3.fromRGB(60, 60, 60),
+    Ancient   = Color3.fromRGB(128, 0, 255),   -- Purple
+    Vintage   = Color3.fromRGB(255, 215, 0),   -- Yellow
+    Classic   = Color3.fromRGB(255, 215, 0),   -- Yellow 
+    Chroma    = Color3.fromRGB(255, 0, 255),   -- Magenta
+    Godly     = Color3.fromRGB(255, 105, 180), -- Pink
+    Legendary = Color3.fromRGB(220, 50, 50),   -- Red
+    Rare      = Color3.fromRGB(50, 200, 50),   -- Green (Fixed!)
+    Uncommon  = Color3.fromRGB(50, 100, 255),  -- Blue (Fixed!)
+    Common    = Color3.fromRGB(150, 150, 150), -- Grey
+    Unique    = Color3.fromRGB(255, 165, 0),   -- Orange
+    Pet       = Color3.fromRGB(255, 200, 0),   -- Gold
+    Unknown   = Color3.fromRGB(255, 255, 255), -- White (Default)
 }
 
 local function getRarityColor(rarity)
     if type(rarity) ~= "string" then return RARITY_COLORS["Unknown"] end
     return RARITY_COLORS[rarity] or RARITY_COLORS["Unknown"]
 end
+
+local function getRarityColor(rarity)
+    if type(rarity) ~= "string" then return RARITY_COLORS["Unknown"] end
+    return RARITY_COLORS[rarity] or RARITY_COLORS["Unknown"]
+end
+
+-- Apply the color to the UI Text (Name of the item)
 
 local weaponKeyMap = {}
 local petKeyMap    = {}
@@ -157,15 +168,18 @@ end
 
 buildLookupMaps()
 
+-- ============================================================
+-- CORE: WATERFALL MATCHING SYSTEM
+-- ============================================================
 local function getSupremeValue(itemName, itemType, itemRarity, itemYear, isChroma)
     if not itemName or itemName == "" then return nil end
     
+    -- Clean inputs
     itemName = string.lower(itemName)
     itemType = string.lower(itemType or "Unknown")
     itemRarity = string.lower(itemRarity or "Unknown")
     itemYear = (itemYear == "None" or itemYear == nil) and "" or tostring(itemYear)
     
-    local targetRarity = isChroma and "chroma" or itemRarity
     local matches = {}
     
     -- STEP 1: Filter by Name
@@ -181,11 +195,23 @@ local function getSupremeValue(itemName, itemType, itemRarity, itemYear, isChrom
     -- STEP 2: Filter by Rarity
     local rarityMatches = {}
     for _, item in ipairs(matches) do
-        if string.lower(item.rarity) == targetRarity then
+        if string.lower(item.rarity) == itemRarity then
             table.insert(rarityMatches, item)
         end
     end
     if #rarityMatches > 0 then matches = rarityMatches end
+    if #matches == 1 then return matches[1].value end
+    
+    -- STEP 2.5: Filter by Chroma Variant!
+    local chromaMatches = {}
+    for _, item in ipairs(matches) do
+        -- Check if the website item's isChroma matches the game item's isChroma
+        local itemIsChroma = item.isChroma == true or item.isChroma == "true"
+        if itemIsChroma == isChroma then
+            table.insert(chromaMatches, item)
+        end
+    end
+    if #chromaMatches > 0 then matches = chromaMatches end
     if #matches == 1 then return matches[1].value end
     
     -- STEP 3: Filter by Type
@@ -855,44 +881,40 @@ local function UpdateDashboard()
 end
 
 -- ================= VALUE TAB (HStack & VStack) ================= --
+
+-- 1. Declare variables FIRST so all functions and buttons can see them!
+local InvElements = {}
+local PlayerBtns = {}
+local PlayerDataCache = {}
+
+-- 2. Create the Layout
 local ValueRow = ValueTab:HStack({ Title = "Inventory Checker" })
 
 local LeftCol = ValueRow:VStack({ Title = "Server Players" })
 local RightCol = ValueRow:VStack({ Title = "Inventory View" })
 
+-- 3. Add the Manual Refresh Button
+LeftCol:Button({
+    Title = "Refresh Player List",
+    Icon = "refresh-cw",
+    Callback = function()
+        -- Clear the old cached inventories so it fetches fresh data
+        PlayerDataCache = {}
+        refreshPlayers()
+        Notify("Refreshed", "Player list and values updated.", 3)
+    end
+})
+
 local InvHeaderPara = RightCol:Paragraph({ Title = "Inventory", Desc = "Select a player to view their inventory" })
 local TotalPara = RightCol:Paragraph({ Title = "Total Value", Desc = "—" })
 RightCol:Divider()
 
-local InvElements = {}
-local PlayerBtns = {}
-local PlayerDataCache = {}
-
+-- 4. UI Functions
 local function clearInventoryUI()
     for _, el in ipairs(InvElements) do
         if el and el.Destroy then pcall(function() el:Destroy() end) end
     end
     InvElements = {}
-end
-
-local function applyRarityColor(el, rarity)
-    if not el then return end
-    local rarityColor = getRarityColor(rarity)
-    pcall(function()
-        if typeof(el) == "Instance" then
-            el.BackgroundColor3 = rarityColor
-            el.BackgroundTransparency = 0.8
-            for _, child in ipairs(el:GetDescendants()) do
-                if child:IsA("ImageLabel") and child.Image ~= "" then
-                    child.ImageColor3 = rarityColor
-                    child.ImageTransparency = 0.8
-                elseif child:IsA("Frame") then
-                    child.BackgroundColor3 = rarityColor
-                    child.BackgroundTransparency = 0.8
-                end
-            end
-        end
-    end)
 end
 
 local function populateInventoryUI(pName, data)
@@ -931,8 +953,117 @@ local function populateInventoryUI(pName, data)
             descStr = descStr .. "   |   Total: " .. fmtVal(item.value * item.qty)
         end
 
-        local el = RightCol:Paragraph({ Title = titleStr, Desc = descStr })
-        applyRarityColor(el, item.rarity)
+        local itemColor = getRarityColor(item.rarity)
+
+        local el = RightCol:Paragraph({ 
+            Title = titleStr, 
+            Desc = descStr,
+            Color = itemColor 
+        })
+        
+        table.insert(InvElements, el)
+    end
+end
+
+local function clearPlayerBtns()
+    for _, b in ipairs(PlayerBtns) do
+        if b and b.Destroy then pcall(function() b:Destroy() end) end
+    end
+    PlayerBtns = {}
+end
+
+function refreshPlayers()
+    clearPlayerBtns()
+    local allPlayers = Players:GetPlayers()
+
+    if #allPlayers == 0 then
+        local b = LeftCol:Paragraph({ Title = "No players found", Desc = "Waiting..." })
+        table.insert(PlayerBtns, b)
+        return
+    end
+
+    for _, p in ipairs(allPlayers) do
+        local pName = p.Name
+        local btn = LeftCol:Button({
+            Title    = pName,
+            Desc     = "Loading...",
+            Callback = function()
+                local data = PlayerDataCache[pName]
+                if not data then 
+                    data = fetchInv(p)
+                    PlayerDataCache[pName] = data
+                end
+                if data then
+                    populateInventoryUI(pName, data)
+                else
+                    Notify("Error", "Could not load " .. pName .. "'s inventory.", 3)
+                end
+            end,
+        })
+        table.insert(PlayerBtns, btn)
+
+        task.spawn(function()
+            local data = fetchInv(p)
+            PlayerDataCache[pName] = data
+            if data then
+                local _, total = buildItemList(data)
+                pcall(function() btn:SetDesc("Value: " .. fmtVal(total)) end)
+            else
+                pcall(function() btn:SetDesc("Value: N/A") end)
+            end
+        end)
+    end
+end
+
+-- ============================================================
+-- UI: INVENTORY POPULATOR
+-- ============================================================
+local function populateInventoryUI(pName, data)
+    clearInventoryUI()
+    if InvHeaderPara then InvHeaderPara:SetTitle(pName .. "'s Inventory") end
+
+    local items, total = buildItemList(data)
+    if TotalPara then
+        TotalPara:SetTitle("Total Value  —  " .. fmtVal(total))
+        TotalPara:SetDesc("Numeric items only. Relative-value items shown below.")
+    end
+
+    if #items == 0 then
+        local el = RightCol:Paragraph({ Title = "No Items Found", Desc = "This player has no items." })
+        table.insert(InvElements, el)
+        return
+    end
+
+    for _, item in ipairs(items) do
+        local valStr = "(N/A)"
+        if item.value ~= nil then
+            if type(item.value) == "number" then
+                valStr = "Value: " .. tostring(item.value)
+            else
+                valStr = "Value: " .. tostring(item.value)
+            end
+        end
+
+        local typeTag = " [" .. item.itype .. "]"
+        if item.chroma then typeTag = " [Chroma" .. (item.itype ~= "Unknown" and " " .. item.itype or "") .. "]" end
+        
+        local titleStr = string.format("[%dx] %s%s", item.qty, item.name, typeTag)
+        local descStr = item.rarity .. "   |   " .. valStr
+        
+        if type(item.value) == "number" and item.qty > 1 then
+            descStr = descStr .. "   |   Total: " .. fmtVal(item.value * item.qty)
+        end
+
+        -- Get our rarity color
+        local itemColor = getRarityColor(item.rarity)
+
+        -- Pass the Color directly into WindUI's Paragraph during creation!
+        local el = RightCol:Paragraph({ 
+            Title = titleStr, 
+            Desc = descStr,
+            Color = itemColor 
+        })
+        
         table.insert(InvElements, el)
     end
 end
@@ -1160,8 +1291,7 @@ table.insert(connections, Players.PlayerAdded:Connect(function()
     if FlingDropdown then
         FlingDropdown:Refresh(GetPlayerList(), true)
     end
-    task.wait(6)
-    refreshPlayers()
+    -- Removed refreshPlayers() here so it doesn't auto-update the Value list
 end))
 
 table.insert(connections, Players.PlayerRemoving:Connect(function(player)
@@ -1171,8 +1301,7 @@ table.insert(connections, Players.PlayerRemoving:Connect(function(player)
     if FlingDropdown then
         FlingDropdown:Refresh(GetPlayerList(), true)
     end
-    task.wait(0.5)
-    refreshPlayers()
+    -- Removed refreshPlayers() here so it doesn't auto-update the Value list
 end))
 
 table.insert(connections, FadeEvent.OnClientEvent:Connect(function(data)
@@ -1508,15 +1637,6 @@ task.spawn(function()
             end
             wasFarming = false
         end
-    end
-end)
-
--- ================= VALUE CHECKER AUTO-REFRESH LOOP ================= --
-task.spawn(function()
-    while ScriptActive do
-        task.wait(10)
-        if not ScriptActive then break end
-        refreshPlayers()
     end
 end)
 
