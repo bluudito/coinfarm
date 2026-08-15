@@ -94,7 +94,7 @@ local blacklistedCoins = {}
 -- ============================================================
 
 -- PASTE YOUR SCRAPED SV_DATA HERE
-loadstring(game:HttpGet("https://raw.githubusercontent.com/bluudito/coinfarm/refs/heads/main/svdata"))()
+local SV_DATA = loadstring(game:HttpGet("https://raw.githubusercontent.com/bluudito/coinfarm/refs/heads/main/svdata"))()
 
 local RARITY_COLORS = {
     Ancient   = Color3.fromRGB(128, 0, 255),
