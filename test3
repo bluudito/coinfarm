@@ -205,7 +205,6 @@ local function getSupremeValue(itemName, itemType, itemRarity, itemYear, isChrom
     -- STEP 2.5: Filter by Chroma Variant!
     local chromaMatches = {}
     for _, item in ipairs(matches) do
-        -- Check if the website item's isChroma matches the game item's isChroma
         local itemIsChroma = item.isChroma == true or item.isChroma == "true"
         if itemIsChroma == isChroma then
             table.insert(chromaMatches, item)
