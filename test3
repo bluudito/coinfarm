@@ -48,8 +48,9 @@ local State = {
     CoinFarmCooldown = 0.5,
     TeleportedToMap = false,
     TeleportTick = 0,
-    AutoKillAllEnabled = false,
     KillAllButtonMode = false,
+    KillAllMode = false,
+    KillTargets = {},
     AntiAfkEnabled = false,
     AntiFlingEnabled = false,
 }
@@ -71,6 +72,7 @@ local antiAfkConn = nil
 local lastSafeCFrame = nil
 
 local KillCircleGui = nil
+local KillDropdown = nil -- Forward declaration for UI
 
 local SelectedFlingTargets = {}
 local FlingActive = false
@@ -93,7 +95,7 @@ local blacklistedCoins = {}
 -- CORE: VALUE CHECKER DATA & MATCHING SYSTEM
 -- ============================================================
 
--- PASTE YOUR SCRAPED SV_DATA HERE
+-- Load Data from GitHub
 local SV_DATA = loadstring(game:HttpGet("https://raw.githubusercontent.com/bluudito/coinfarm/refs/heads/main/svdata"))()
 
 -- ============================================================
@@ -106,8 +108,8 @@ local RARITY_COLORS = {
     Chroma    = Color3.fromRGB(255, 0, 255),   -- Magenta
     Godly     = Color3.fromRGB(255, 105, 180), -- Pink
     Legendary = Color3.fromRGB(220, 50, 50),   -- Red
-    Rare      = Color3.fromRGB(50, 200, 50),   -- Green (Fixed!)
-    Uncommon  = Color3.fromRGB(50, 100, 255),  -- Blue (Fixed!)
+    Rare      = Color3.fromRGB(50, 200, 50),   -- Green
+    Uncommon  = Color3.fromRGB(50, 100, 255),  -- Blue
     Common    = Color3.fromRGB(150, 150, 150), -- Grey
     Unique    = Color3.fromRGB(255, 165, 0),   -- Orange
     Pet       = Color3.fromRGB(255, 200, 0),   -- Gold
@@ -118,13 +120,6 @@ local function getRarityColor(rarity)
     if type(rarity) ~= "string" then return RARITY_COLORS["Unknown"] end
     return RARITY_COLORS[rarity] or RARITY_COLORS["Unknown"]
 end
-
-local function getRarityColor(rarity)
-    if type(rarity) ~= "string" then return RARITY_COLORS["Unknown"] end
-    return RARITY_COLORS[rarity] or RARITY_COLORS["Unknown"]
-end
-
--- Apply the color to the UI Text (Name of the item)
 
 local weaponKeyMap = {}
 local petKeyMap    = {}
@@ -174,7 +169,6 @@ buildLookupMaps()
 local function getSupremeValue(itemName, itemType, itemRarity, itemYear, isChroma)
     if not itemName or itemName == "" then return nil end
     
-    -- Clean inputs
     itemName = string.lower(itemName)
     itemType = string.lower(itemType or "Unknown")
     itemRarity = string.lower(itemRarity or "Unknown")
@@ -182,13 +176,12 @@ local function getSupremeValue(itemName, itemType, itemRarity, itemYear, isChrom
     
     local matches = {}
     
-    -- STEP 1: Filter by Name
+    -- STEP 1: Filter by Name (STRICT MATCH)
     for _, item in ipairs(SV_DATA) do
         if string.lower(item.name) == itemName then
             table.insert(matches, item)
         end
     end
-    
     if #matches == 0 then return nil end
     if #matches == 1 then return matches[1].value end
     
@@ -202,7 +195,7 @@ local function getSupremeValue(itemName, itemType, itemRarity, itemYear, isChrom
     if #rarityMatches > 0 then matches = rarityMatches end
     if #matches == 1 then return matches[1].value end
     
-    -- STEP 2.5: Filter by Chroma Variant!
+    -- STEP 2.5: Filter by Chroma Variant
     local chromaMatches = {}
     for _, item in ipairs(matches) do
         local itemIsChroma = item.isChroma == true or item.isChroma == "true"
@@ -613,20 +606,26 @@ local function PerformKillAll()
 
     local savedPositions = {}
     local targets = {}
+    
     for _, targetPlr in ipairs(Players:GetPlayers()) do
         if targetPlr ~= LocalPlayer and targetPlr.Character and targetPlr.Character:FindFirstChild("HumanoidRootPart") then
             local tData = State.PlayersData[targetPlr.Name]
             if tData and not tData.Dead then
-                local targetHrp = targetPlr.Character.HumanoidRootPart
-                savedPositions[targetHrp] = targetHrp.CFrame
-                table.insert(targets, targetHrp)
-                for _, part in ipairs(targetPlr.Character:GetDescendants()) do
-                    if part:IsA("BasePart") then part.CanCollide = false end
+                -- Check if we should kill this player (Kill All mode, or specifically selected)
+                local shouldKill = State.KillAllMode or State.KillTargets[targetPlr.Name] ~= nil
+                if shouldKill then
+                    local targetHrp = targetPlr.Character.HumanoidRootPart
+                    savedPositions[targetHrp] = targetHrp.CFrame
+                    table.insert(targets, targetHrp)
+                    for _, part in ipairs(targetPlr.Character:GetDescendants()) do
+                        if part:IsA("BasePart") then part.CanCollide = false end
+                    end
                 end
             end
         end
     end
-    if #targets == 0 then return end
+    
+    if #targets == 0 then return end -- No valid targets selected
 
     local holdingLoop = RunService.Heartbeat:Connect(function()
         for _, targetHrp in ipairs(targets) do
@@ -716,6 +715,7 @@ local function DestroyKillCircle()
     if KillCircleGui then KillCircleGui:Destroy() KillCircleGui = nil end
 end
 
+-- ================= ANTI KICK ================= --
 -- ================= ANTI KICK ================= --
 local hooksActive = false
 
@@ -880,24 +880,18 @@ local function UpdateDashboard()
 end
 
 -- ================= VALUE TAB (HStack & VStack) ================= --
-
--- 1. Declare variables FIRST so all functions and buttons can see them!
 local InvElements = {}
 local PlayerBtns = {}
 local PlayerDataCache = {}
 
--- 2. Create the Layout
 local ValueRow = ValueTab:HStack({ Title = "Inventory Checker" })
-
 local LeftCol = ValueRow:VStack({ Title = "Server Players" })
 local RightCol = ValueRow:VStack({ Title = "Inventory View" })
 
--- 3. Add the Manual Refresh Button
 LeftCol:Button({
     Title = "Refresh Player List",
     Icon = "refresh-cw",
     Callback = function()
-        -- Clear the old cached inventories so it fetches fresh data
         PlayerDataCache = {}
         refreshPlayers()
         Notify("Refreshed", "Player list and values updated.", 3)
@@ -908,7 +902,6 @@ local InvHeaderPara = RightCol:Paragraph({ Title = "Inventory", Desc = "Select a
 local TotalPara = RightCol:Paragraph({ Title = "Total Value", Desc = "—" })
 RightCol:Divider()
 
--- 4. UI Functions
 local function clearInventoryUI()
     for _, el in ipairs(InvElements) do
         if el and el.Destroy then pcall(function() el:Destroy() end) end
@@ -959,7 +952,6 @@ local function populateInventoryUI(pName, data)
             Desc = descStr,
             Color = itemColor 
         })
-        
         table.insert(InvElements, el)
     end
 end
@@ -981,140 +973,68 @@ function refreshPlayers()
         return
     end
 
-    for _, p in ipairs(allPlayers) do
-        local pName = p.Name
-        local btn = LeftCol:Button({
-            Title    = pName,
-            Desc     = "Loading...",
-            Callback = function()
-                local data = PlayerDataCache[pName]
-                if not data then 
-                    data = fetchInv(p)
-                    PlayerDataCache[pName] = data
-                end
-                if data then
-                    populateInventoryUI(pName, data)
-                else
-                    Notify("Error", "Could not load " .. pName .. "'s inventory.", 3)
-                end
-            end,
-        })
-        table.insert(PlayerBtns, btn)
+    -- 1. Show a temporary "Loading" message while we fetch their values
+    local loadingText = LeftCol:Paragraph({ Title = "Loading Players", Desc = "Fetching values..." })
+    table.insert(PlayerBtns, loadingText)
 
-        task.spawn(function()
-            local data = fetchInv(p)
-            PlayerDataCache[pName] = data
-            if data then
-                local _, total = buildItemList(data)
-                pcall(function() btn:SetDesc("Value: " .. fmtVal(total)) end)
-            else
-                pcall(function() btn:SetDesc("Value: N/A") end)
-            end
-        end)
-    end
-end
-
--- ============================================================
--- UI: INVENTORY POPULATOR
--- ============================================================
-local function populateInventoryUI(pName, data)
-    clearInventoryUI()
-    if InvHeaderPara then InvHeaderPara:SetTitle(pName .. "'s Inventory") end
-
-    local items, total = buildItemList(data)
-    if TotalPara then
-        TotalPara:SetTitle("Total Value  —  " .. fmtVal(total))
-        TotalPara:SetDesc("Numeric items only. Relative-value items shown below.")
-    end
-
-    if #items == 0 then
-        local el = RightCol:Paragraph({ Title = "No Items Found", Desc = "This player has no items." })
-        table.insert(InvElements, el)
-        return
-    end
-
-    for _, item in ipairs(items) do
-        local valStr = "(N/A)"
-        if item.value ~= nil then
-            if type(item.value) == "number" then
-                valStr = "Value: " .. tostring(item.value)
-            else
-                valStr = "Value: " .. tostring(item.value)
-            end
-        end
-
-        local typeTag = " [" .. item.itype .. "]"
-        if item.chroma then typeTag = " [Chroma" .. (item.itype ~= "Unknown" and " " .. item.itype or "") .. "]" end
-        
-        local titleStr = string.format("[%dx] %s%s", item.qty, item.name, typeTag)
-        local descStr = item.rarity .. "   |   " .. valStr
-        
-        if type(item.value) == "number" and item.qty > 1 then
-            descStr = descStr .. "   |   Total: " .. fmtVal(item.value * item.qty)
-        end
-
-        -- Get our rarity color
-        local itemColor = getRarityColor(item.rarity)
-
-        -- Pass the Color directly into WindUI's Paragraph during creation!
-        local el = RightCol:Paragraph({ 
-            Title = titleStr, 
-            Desc = descStr,
-            Color = itemColor 
-        })
-        
-        table.insert(InvElements, el)
-    end
-end
-
-local function clearPlayerBtns()
-    for _, b in ipairs(PlayerBtns) do
-        if b and b.Destroy then pcall(function() b:Destroy() end) end
-    end
-    PlayerBtns = {}
-end
-
-local function refreshPlayers()
-    clearPlayerBtns()
-    local allPlayers = Players:GetPlayers()
-
-    if #allPlayers == 0 then
-        local b = LeftCol:Paragraph({ Title = "No players found", Desc = "Waiting..." })
-        table.insert(PlayerBtns, b)
-        return
-    end
+    -- 2. Fetch all player data in the background
+    local playerDataList = {}
+    local completed = 0
 
     for _, p in ipairs(allPlayers) do
-        local pName = p.Name
-        local btn = LeftCol:Button({
-            Title    = pName,
-            Desc     = "Loading...",
-            Callback = function()
-                local data = PlayerDataCache[pName]
-                if not data then 
-                    data = fetchInv(p)
-                    PlayerDataCache[pName] = data
-                end
-                if data then
-                    populateInventoryUI(pName, data)
-                else
-                    Notify("Error", "Could not load " .. pName .. "'s inventory.", 3)
-                end
-            end,
-        })
-        table.insert(PlayerBtns, btn)
-
         task.spawn(function()
-            local data = fetchInv(p)
+            local pName = p.Name
+            local data = PlayerDataCache[pName] or fetchInv(p)
             PlayerDataCache[pName] = data
+            
+            local total = 0
             if data then
-                local _, total = buildItemList(data)
-                pcall(function() btn:SetDesc("Value: " .. fmtVal(total)) end)
-            else
-                pcall(function() btn:SetDesc("Value: N/A") end)
+                local _, t = buildItemList(data)
+                total = t
             end
+            
+            table.insert(playerDataList, {player = p, name = pName, total = total})
+            completed += 1
         end)
     end
+
+    -- 3. Wait for all fetches to finish
+    task.spawn(function()
+        local startTime = tick()
+        -- Wait until all players are fetched, or 5 seconds pass to prevent infinite loop
+        while completed < #allPlayers and tick() - startTime < 5 do
+            task.wait(0.1)
+        end
+
+        -- 4. Sort the list by Total Value (Highest to Lowest)
+        table.sort(playerDataList, function(a, b)
+            return a.total > b.total
+        end)
+
+        -- 5. Clear the "Loading" message
+        clearPlayerBtns()
+
+        -- 6. Draw the buttons in perfect sorted order!
+        for _, pData in ipairs(playerDataList) do
+            local btn = LeftCol:Button({
+                Title    = pData.name,
+                Desc     = "Value: " .. fmtVal(pData.total),
+                Callback = function()
+                    local data = PlayerDataCache[pData.name]
+                    if not data then 
+                        data = fetchInv(pData.player)
+                        PlayerDataCache[pData.name] = data
+                    end
+                    if data then
+                        populateInventoryUI(pData.name, data)
+                    else
+                        Notify("Error", "Could not load " .. pData.name .. "'s inventory.", 3)
+                    end
+                end,
+            })
+            table.insert(PlayerBtns, btn)
+        end
+    end)
 end
 
 -- ================= CLOSE SCRIPT ================= --
@@ -1124,7 +1044,6 @@ local function CloseScript()
 
     FlingActive               = false
     State.CoinFarmEnabled     = false
-    State.AutoKillAllEnabled  = false
     State.KillAllButtonMode   = false
     State.ESPEnabled          = false
     State.AntiAfkEnabled      = false
@@ -1228,13 +1147,44 @@ FarmTab:Toggle({
 })
 
 -- ================= KILL TAB UI ================= --
-KillTab:Toggle({ Title = "Auto Kill All (Murderer)", Icon = "sword", Value = false, Callback = function(val) State.AutoKillAllEnabled = val end })
 KillTab:Toggle({
     Title = "Manual Kill Button", Icon = "mouse-pointer-click", Value = false,
     Callback = function(val)
         State.KillAllButtonMode = val
         if val then CreateKillCircle() else DestroyKillCircle() end
     end
+})
+
+KillTab:Section({ Title = "Kill Settings" })
+
+KillTab:Toggle({
+    Title = "Kill All Players", Icon = "skull", Value = false,
+    Callback = function(val)
+        State.KillAllMode = val
+    end
+})
+
+KillTab:Section({ Title = "Select Specific Targets" })
+KillDropdown = KillTab:Dropdown({
+    Title = "Select Targets", Icon = "users",
+    Values = GetPlayerList(),
+    Multi = true, 
+    Value = nil,
+    Callback = function(val)
+        State.KillTargets = {}
+        if typeof(val) == "table" then
+            for _, name in pairs(val) do
+                local p = Players:FindFirstChild(name)
+                if p then State.KillTargets[name] = p end
+            end
+        end
+    end
+})
+KillTab:Button({ 
+    Title = "Refresh List", Icon = "refresh-cw", 
+    Callback = function() 
+        if KillDropdown then KillDropdown:Refresh(GetPlayerList(), true) end 
+    end 
 })
 
 -- ================= FLING TAB UI ================= --
@@ -1287,20 +1237,18 @@ UtilityTab:Toggle({
 -- ================= REMOTE CONNECTIONS ================= --
 table.insert(connections, Players.PlayerAdded:Connect(function()
     task.wait(1)
-    if FlingDropdown then
-        FlingDropdown:Refresh(GetPlayerList(), true)
-    end
-    -- Removed refreshPlayers() here so it doesn't auto-update the Value list
+    if FlingDropdown then FlingDropdown:Refresh(GetPlayerList(), true) end
+    if KillDropdown then KillDropdown:Refresh(GetPlayerList(), true) end
 end))
 
 table.insert(connections, Players.PlayerRemoving:Connect(function(player)
     if espObjects[player] then espObjects[player]:Destroy() espObjects[player] = nil end
     SelectedFlingTargets[player.Name] = nil
+    State.KillTargets[player.Name] = nil
     PlayerDataCache[player.Name] = nil
-    if FlingDropdown then
-        FlingDropdown:Refresh(GetPlayerList(), true)
-    end
-    -- Removed refreshPlayers() here so it doesn't auto-update the Value list
+    
+    if FlingDropdown then FlingDropdown:Refresh(GetPlayerList(), true) end
+    if KillDropdown then KillDropdown:Refresh(GetPlayerList(), true) end
 end))
 
 table.insert(connections, FadeEvent.OnClientEvent:Connect(function(data)
@@ -1487,28 +1435,8 @@ task.spawn(function()
 
         local hrp = char.HumanoidRootPart
         local bagIsFull = State.MaxCoins > 0 and State.LocalCoins >= State.MaxCoins
-        local shouldKillAll = State.GameState == "Active" and myRole == "Murderer" and (State.AutoKillAllEnabled or (State.CoinFarmEnabled and bagIsFull))
 
-        if shouldKillAll then
-            if noclipActive then setNoclip(false) end
-            if reusableBodyVel then reusableBodyVel:Destroy() reusableBodyVel = nil end
-            wasFarming = false
-            for _, v in ipairs(hrp:GetChildren()) do if v:IsA("BodyPosition") then v:Destroy() end end
-            hrp.CFrame = CampCFrame
-            local campHold = Instance.new("BodyPosition")
-            campHold.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-            campHold.P = 10000
-            campHold.D = 500
-            campHold.Position = CampCFrame.Position
-            campHold.Parent = hrp
-            while ScriptActive and State.GameState == "Active" do
-                local cd = State.PlayersData[LocalPlayer.Name]
-                if cd and (cd.Dead or cd.Role ~= "Murderer") then break end
-                task.spawn(PerformKillAll)
-                task.wait(1)
-            end
-            campHold:Destroy()
-        elseif State.CoinFarmEnabled and (State.GameState == "Active" or (State.GameState == "Prep" and State.TeleportedToMap)) then
+        if State.CoinFarmEnabled and (State.GameState == "Active" or (State.GameState == "Prep" and State.TeleportedToMap)) then
             wasFarming = true
             if not noclipActive then setNoclip(true) end
             if State.GameState == "Active" and bagIsFull then
